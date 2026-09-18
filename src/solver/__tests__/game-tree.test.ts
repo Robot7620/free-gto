@@ -6,7 +6,6 @@ import {
   GameNode,
   TreeConfig,
   DEFAULT_TREE_CONFIG,
-  RICH_TREE_CONFIG,
 } from '../game-tree'
 import { stringToCard, createDeck, cardToNumber, Card } from '../../engine/cards'
 
@@ -24,12 +23,11 @@ const STARTING_STACK = 100
 const STARTING_POT = 10
 const BOARD: Card[] = ['Ks', '9h', '4c'].map(stringToCard)
 
-// The exhaustive tree at these parameters (2 runouts per chance node) is
-// ~290k nodes, depth 15. The cap is a guard against a regression making the
-// tree explode, not a budget we expect to approach.
-const NODE_CAP = 400_000
+// The cap guards against a regression making the tree explode; it isn't a
+// budget we expect to approach. It's per-config because a denser sizing set is
+// legitimately a much bigger tree.
 const EPS = 1e-6
-const AGGRESSIVE = new Set(['bet33', 'bet50', 'bet75', 'betpot', 'allin'])
+const AGGRESSIVE = new Set(['bet25', 'bet33', 'bet50', 'bet75', 'betpot', 'allin'])
 
 interface Failure {
   history: string
@@ -88,7 +86,7 @@ function pickRunouts(board: Card[], n: number): Card[] {
   )
 }
 
-function walkTree(config: TreeConfig): WalkResult {
+function walkTree(config: TreeConfig, nodeCap: number): WalkResult {
   const failures = {
     chip_conservation: [],
     non_negative_stacks: [],
@@ -192,7 +190,7 @@ function walkTree(config: TreeConfig): WalkResult {
 
   const walk = (node: GameNode, parent: GameNode | null, depth: number) => {
     nodeCount++
-    if (nodeCount > NODE_CAP) throw new RangeError(`node cap ${NODE_CAP} exceeded`)
+    if (nodeCount > nodeCap) throw new RangeError(`node cap ${nodeCap} exceeded`)
     maxDepth = Math.max(maxDepth, depth)
 
     check(node, parent)
@@ -219,17 +217,28 @@ function walkTree(config: TreeConfig): WalkResult {
   return { failures, nodeCount, maxDepth, aborted }
 }
 
-// Both shipped configs get walked: the lean default the solver now uses, and
-// the rich five-size tree kept for comparison. A change that only holds for one
-// of them is a change that will surprise someone.
+// A denser tree with a looser cap, so the invariants are checked against more
+// than one shape. Sizings are configurable, and a change that only holds for the
+// default config is one that will surprise whoever changes it.
+const DENSE_CONFIG: TreeConfig = {
+  betFractions: [
+    ['bet25', 0.25],
+    ['bet33', 0.33],
+    ['bet50', 0.5],
+    ['bet75', 0.75],
+    ['betpot', 1],
+  ],
+  maxAggressiveActions: 2,
+}
+
 describe.each([
-  ['default (3 sizes)', DEFAULT_TREE_CONFIG],
-  ['rich (5 sizes)', RICH_TREE_CONFIG],
-])('game tree invariants - %s', (_label, config) => {
+  ['default', DEFAULT_TREE_CONFIG, 400_000],
+  ['dense 5-size, cap 2', DENSE_CONFIG, 3_000_000],
+])('game tree invariants - %s', (_label, config, nodeCap) => {
   let result: WalkResult
 
   beforeAll(() => {
-    result = walkTree(config)
+    result = walkTree(config, nodeCap)
   })
 
   const report = (name: Invariant) =>

@@ -24,17 +24,6 @@ export const DEFAULT_TREE_CONFIG: TreeConfig = {
   maxAggressiveActions: 3,
 }
 
-// The richer tree the solver used before, kept so configs can be compared.
-export const RICH_TREE_CONFIG: TreeConfig = {
-  betFractions: [
-    ['bet33', 0.33],
-    ['bet50', 0.5],
-    ['bet75', 0.75],
-    ['betpot', 1],
-  ],
-  maxAggressiveActions: 3,
-}
-
 export interface GameNode {
   id: string
   player: number
