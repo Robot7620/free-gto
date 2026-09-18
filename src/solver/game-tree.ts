@@ -88,6 +88,9 @@ export function applyAction(node: GameNode, action: string): GameNode {
     const callAmount = Math.min(node.stack[node.player], node.pot / 2)
     newPot += callAmount
     newStack[node.player] -= callAmount
+    // A call always closes the betting round (single-street model: goes to
+    // showdown - leave payoff unset so cfr.ts evaluates the hands).
+    isTerminal = true
   } else if (action.startsWith('bet') || action === 'allin') {
     let betAmount = 0
     if (action === 'bet33') betAmount = node.pot * 0.33
@@ -99,6 +102,13 @@ export function applyAction(node: GameNode, action: string): GameNode {
     betAmount = Math.min(betAmount, node.stack[node.player])
     newPot += betAmount
     newStack[node.player] -= betAmount
+  }
+
+  // A check that follows the opponent's check also closes the betting
+  // round (single-street model: goes to showdown).
+  const lastAction = node.history.split('/').pop()
+  if (action === 'check' && lastAction === 'check') {
+    isTerminal = true
   }
 
   const canCheck = action === 'check' || action === 'call'

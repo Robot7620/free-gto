@@ -6,6 +6,9 @@ export default {
   ],
   theme: {
     extend: {
+      gridTemplateColumns: {
+        '13': 'repeat(13, minmax(0, 1fr))',
+      },
       colors: {
         poker: {
           felt: '#0a5f38',
