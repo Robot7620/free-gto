@@ -1,5 +1,13 @@
 import { describe, it, expect, beforeAll } from 'vitest'
-import { createInitialNode, applyAction, advanceStreet, GameNode } from '../game-tree'
+import {
+  createInitialNode,
+  applyAction,
+  advanceStreet,
+  GameNode,
+  TreeConfig,
+  DEFAULT_TREE_CONFIG,
+  RICH_TREE_CONFIG,
+} from '../game-tree'
 import { stringToCard, createDeck, cardToNumber, Card } from '../../engine/cards'
 
 // Structural invariants for the multi-street game tree, checked by walking it
@@ -22,7 +30,6 @@ const BOARD: Card[] = ['Ks', '9h', '4c'].map(stringToCard)
 const NODE_CAP = 400_000
 const EPS = 1e-6
 const AGGRESSIVE = new Set(['bet33', 'bet50', 'bet75', 'betpot', 'allin'])
-const MAX_AGGRESSIVE_ACTIONS = 3
 
 interface Failure {
   history: string
@@ -81,7 +88,7 @@ function pickRunouts(board: Card[], n: number): Card[] {
   )
 }
 
-function walkTree(): WalkResult {
+function walkTree(config: TreeConfig): WalkResult {
   const failures = {
     chip_conservation: [],
     non_negative_stacks: [],
@@ -167,10 +174,10 @@ function walkTree(): WalkResult {
     }
 
     const aggressiveSoFar = aggressiveCountInStreet(node.history)
-    if (aggressiveSoFar > MAX_AGGRESSIVE_ACTIONS) {
+    if (aggressiveSoFar > config.maxAggressiveActions) {
       fail('raise_cap', node, `${aggressiveSoFar} aggressive actions this street`)
     }
-    if (aggressiveSoFar >= MAX_AGGRESSIVE_ACTIONS) {
+    if (aggressiveSoFar >= config.maxAggressiveActions) {
       const offered = node.actions.filter(a => AGGRESSIVE.has(a))
       if (offered.length > 0) fail('raise_cap', node, `at cap but still offers [${offered}]`)
     }
@@ -204,7 +211,7 @@ function walkTree(): WalkResult {
   }
 
   try {
-    walk(createInitialNode(STARTING_STACK, STARTING_POT, BOARD), null, 0)
+    walk(createInitialNode(STARTING_STACK, STARTING_POT, BOARD, config), null, 0)
   } catch (e) {
     aborted = e instanceof Error ? e.message : String(e)
   }
@@ -212,11 +219,17 @@ function walkTree(): WalkResult {
   return { failures, nodeCount, maxDepth, aborted }
 }
 
-describe('game tree invariants', () => {
+// Both shipped configs get walked: the lean default the solver now uses, and
+// the rich five-size tree kept for comparison. A change that only holds for one
+// of them is a change that will surprise someone.
+describe.each([
+  ['default (3 sizes)', DEFAULT_TREE_CONFIG],
+  ['rich (5 sizes)', RICH_TREE_CONFIG],
+])('game tree invariants - %s', (_label, config) => {
   let result: WalkResult
 
   beforeAll(() => {
-    result = walkTree()
+    result = walkTree(config)
   })
 
   const report = (name: Invariant) =>
