@@ -30,10 +30,13 @@ Next steps, in the order worth trying:
    strong hands separate from weak ones (KK and 99 should get more aggressive
    than 55 and AQo). If the ordering doesn't separate as iterations climb,
    something is structurally wrong rather than just under-sampled.
-3. **Verify the tree invariants.** Never completed. Worth asserting: chips
-   conserved (`pot === contributed[0] + contributed[1]`), payoffs zero-sum,
-   `streetContributed` resets to [0,0] on each new street, street never
-   regresses, no node is `isChance` on the river, and the 3-bet cap holds.
+3. ~~**Verify the tree invariants.**~~ Done — all 9 pass over an exhaustive
+   ~290k-node walk (termination, chip conservation, non-negative stacks,
+   zero-sum payoffs, street progression, `streetContributed` resets, action
+   legality, raise cap, all-in behavior). The walk found two real bugs, both
+   float dust, now fixed — see below. The harness is not in the repo; it lives
+   in the session scratchpad, so it's worth re-creating as a proper test if this
+   branch moves forward.
 
 ### Design decisions worth knowing before changing this
 
@@ -52,6 +55,12 @@ Next steps, in the order worth trying:
 - **OOP acts first on every street** now, which is correct postflop but changed
   which player sits at the root — the UI had to be reworked for it, and the two
   strategy panels read from different nodes (`''` for BB, `'check'` for BTN).
+- **Chip amounts are compared with an epsilon** (`EPSILON` / `snapToZero` in
+  `game-tree.ts`). Sizing bets off pot fractions leaves float64 dust: after a
+  few raises an amount that should be exactly 0 came out as 1.4e-14. Compared
+  exactly, that dust made the tree offer fold/call where checking was free, and
+  offer all-in to a player whose stack was already empty. Don't reintroduce bare
+  `> 0` comparisons on chip amounts.
 
 ## 1. Show per-hand strategy in the range grid (priority)
 

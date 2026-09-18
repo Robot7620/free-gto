@@ -35,6 +35,16 @@ const BET_FRACTIONS: [string, number][] = [
 // for no real strategic gain.
 const MAX_AGGRESSIVE_ACTIONS = 3
 
+// Sizing bets off pot fractions leaves float64 dust: after a few raises an
+// amount that should be exactly 0 comes out as 1.4e-14. Compared exactly, that
+// dust makes the tree offer fold/call where checking is free, and offer all-in
+// to a player whose stack is already empty. Anything below this is zero.
+const EPSILON = 1e-9
+
+function snapToZero(x: number): number {
+  return Math.abs(x) < EPSILON ? 0 : x
+}
+
 // Streets are separated by '|' in the history, so the current round's actions
 // are whatever follows the last separator.
 function currentStreetHistory(history: string): string {
@@ -86,20 +96,20 @@ export function generateActions(
 ): string[] {
   const actions: string[] = []
 
-  if (toCall > 0) {
+  if (toCall > EPSILON) {
     actions.push('fold')
     actions.push('call')
   } else {
     actions.push('check')
   }
 
-  if (allowAggression && stack > toCall) {
+  if (allowAggression && stack > toCall + EPSILON) {
     BET_FRACTIONS.forEach(([label]) => {
       const cost = actionCost(label, pot, stack, toCall)
       const raise = cost - toCall
       // Must be a legal raise (at least matching what's owed) and leave the
       // actor with chips behind - otherwise it's just an all-in.
-      if (raise >= Math.max(toCall, 0) && raise > 0 && cost < stack) {
+      if (raise >= Math.max(toCall, 0) - EPSILON && raise > EPSILON && cost < stack - EPSILON) {
         actions.push(label)
       }
     })
@@ -161,9 +171,8 @@ export function applyAction(node: GameNode, action: string): GameNode {
   const opponent = 1 - player
   const separator = node.history === '' || node.history.endsWith(':') ? '' : '/'
   const newHistory = node.history + separator + action
-  const toCall = Math.max(
-    0,
-    node.streetContributed[opponent] - node.streetContributed[player]
+  const toCall = snapToZero(
+    Math.max(0, node.streetContributed[opponent] - node.streetContributed[player])
   )
 
   const newStack = [...node.stack]
@@ -184,7 +193,7 @@ export function applyAction(node: GameNode, action: string): GameNode {
     payoff[opponent] = atRisk
   } else {
     const cost = actionCost(action, node.pot, node.stack[player], toCall)
-    newStack[player] -= cost
+    newStack[player] = snapToZero(newStack[player] - cost)
     newContributed[player] += cost
     newStreetContributed[player] += cost
     newPot += cost
@@ -206,9 +215,8 @@ export function applyAction(node: GameNode, action: string): GameNode {
     }
   }
 
-  const nextToCall = Math.max(
-    0,
-    newStreetContributed[player] - newStreetContributed[opponent]
+  const nextToCall = snapToZero(
+    Math.max(0, newStreetContributed[player] - newStreetContributed[opponent])
   )
 
   return {
