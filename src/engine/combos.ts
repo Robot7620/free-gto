@@ -66,12 +66,12 @@ export function enumerateRangeCombos(range: Range, blocked: Card[]): HandCombo[]
 }
 
 // Sample one holding with probability proportional to its weight.
-export function sampleCombo(combos: HandCombo[]): HandCombo | null {
+export function sampleCombo(combos: HandCombo[], rng: () => number = Math.random): HandCombo | null {
   let total = 0
   for (const c of combos) total += c.weight
   if (total <= 0) return null
 
-  let target = Math.random() * total
+  let target = rng() * total
   for (const c of combos) {
     target -= c.weight
     if (target <= 0) return c

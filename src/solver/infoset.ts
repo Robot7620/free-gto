@@ -2,6 +2,10 @@ export class InfoSet {
   public regretSum: Map<string, number> = new Map()
   public strategySum: Map<string, number> = new Map()
   public actions: string[]
+  // How many times regrets have actually been updated here. Regret matching
+  // needs a meaningful number of these before its output means anything, and
+  // the count is the difference between "converged" and "still uniform".
+  public visits: number = 0
 
   constructor(public key: string, actions: string[]) {
     this.actions = actions

@@ -4,12 +4,33 @@ import { Card, cardToNumber, createDeck, removeCards } from '../engine/cards'
 import { evaluateHand } from '../engine/evaluator'
 import { Range } from '../engine/range'
 import { enumerateRangeCombos, sampleCombo, conflictsWith } from '../engine/combos'
+import { Rng, defaultRng, makeRng } from './rng'
 
 export interface CFRResult {
   infoSets: InfoSet[]
   iterations: number
   exploitability?: number
 }
+
+export interface CoverageStats {
+  infoSets: number
+  medianVisits: number
+  p10Visits: number
+  fractionUnderThreshold: number
+  threshold: number
+}
+
+// Measured reference points, 20k iterations on Ks9h4c(+2d,7s), 100bb/10bb:
+//
+//   street  infosets  mean  p10  median  p90  under-30
+//   river      2,571  23.0    2       9   41       84%   <- produces good output
+//   turn     104,934   4.4    0       1   10       98%
+//   flop     623,925   2.4    0       1    5       99%   <- produces noise
+//
+// Note the distribution is heavily skewed, so judge by median, not mean. Even
+// the river solve - the one that works - leaves 84% of its info sets under 30
+// visits; it's fine because the lines that actually get reached are the ones
+// that get sampled. Median 9 works, median 1 does not.
 
 // Strip the dealt runout cards out of a history, leaving just the betting line
 // (streets still separated by '|'). Which card came is already reflected in the
@@ -22,8 +43,8 @@ export function bettingLine(history: string): string {
     .join('|')
 }
 
-function sampleAction(strategy: Map<string, number>, actions: string[]): string {
-  let target = Math.random()
+function sampleAction(strategy: Map<string, number>, actions: string[], rng: Rng): string {
+  let target = rng()
   for (const action of actions) {
     target -= strategy.get(action) || 0
     if (target <= 0) return action
@@ -35,9 +56,11 @@ export class CFRSolver {
   private infoSetManager: InfoSetManager
   private iterations: number = 0
   private bucketCache: Map<string, number> = new Map()
+  private rng: Rng
 
-  constructor() {
+  constructor(seed?: number) {
     this.infoSetManager = new InfoSetManager()
+    this.rng = seed === undefined ? defaultRng : makeRng(seed)
   }
 
   // Hand strength on the current board, bucketed. The evaluator packs the hand
@@ -90,7 +113,7 @@ export class CFRSolver {
     const dealt = new Set(node.board.map(cardToNumber))
     const available = deck.filter(c => !dealt.has(cardToNumber(c)))
     if (available.length === 0) return null
-    return available[Math.floor(Math.random() * available.length)]
+    return available[Math.floor(this.rng() * available.length)]
   }
 
   // External-sampling MCCFR. Only the traverser's own decision nodes branch
@@ -121,7 +144,7 @@ export class CFRSolver {
     if (player !== traverser) {
       // Opponent node: accumulate their average strategy and follow one action.
       infoSet.accumulateStrategy(strategy)
-      const action = sampleAction(strategy, node.actions)
+      const action = sampleAction(strategy, node.actions, this.rng)
       return this.traverse(applyAction(node, action), hands, traverser, deck)
     }
 
@@ -139,6 +162,7 @@ export class CFRSolver {
     node.actions.forEach(action => {
       infoSet.addRegret(action, (utils.get(action) || 0) - nodeUtil)
     })
+    infoSet.visits++
 
     return nodeUtil
   }
@@ -159,11 +183,11 @@ export class CFRSolver {
     const fullDeck = createDeck()
 
     for (let i = 0; i < iterations; i++) {
-      const hand0 = sampleCombo(combos0)
+      const hand0 = sampleCombo(combos0, this.rng)
       if (!hand0) break
 
       const available1 = combos1.filter(c => !conflictsWith(c.cards, hand0.cards))
-      const hand1 = sampleCombo(available1)
+      const hand1 = sampleCombo(available1, this.rng)
       if (!hand1) continue
 
       const hands: [Card[], Card[]] = [hand0.cards, hand1.cards]
@@ -204,6 +228,31 @@ export class CFRSolver {
     }
 
     return totals
+  }
+
+  // How well sampled the solve actually is. Report this before reporting any
+  // strategy - an under-covered solve returns confident-looking numbers that
+  // are still essentially the uniform strategy it started from.
+  getCoverageStats(threshold: number = 30): CoverageStats {
+    const visits = this.infoSetManager
+      .getAllInfoSets()
+      .map(is => is.visits)
+      .sort((a, b) => a - b)
+
+    if (visits.length === 0) {
+      return { infoSets: 0, medianVisits: 0, p10Visits: 0, fractionUnderThreshold: 0, threshold }
+    }
+
+    const at = (q: number) => visits[Math.min(visits.length - 1, Math.floor(visits.length * q))]
+    const under = visits.filter(v => v < threshold).length
+
+    return {
+      infoSets: visits.length,
+      medianVisits: at(0.5),
+      p10Visits: at(0.1),
+      fractionUnderThreshold: under / visits.length,
+      threshold,
+    }
   }
 
   getStrategy(infoSetKey: string): Map<string, number> | null {
