@@ -35,8 +35,27 @@ settling lowest is new and good. But an underpair matching top set is not a real
 strategy, and that is the draw-blind bucketing, not sampling — which is what
 phases 3–5 exist to fix. Don't read the remaining gap as "needs more iterations".
 
-Then phases 3–6: precompute the public tree into flat arrays, the vectorized CFR
-core, Nash distance, and the Web Worker + UI.
+**Phase 3 done**: both precomputations are in, and nothing consumes them yet —
+they're infrastructure for the vectorized core.
+
+- `public-tree.ts` enumerates the betting tree once into flat typed arrays. The
+  whole flop tree is **3,957 nodes in 134 KiB**. It rests on the betting
+  structure being independent of *which* runout card is dealt (pot, stacks and
+  legal actions after a turn card are the same whatever it was), so a chance node
+  has exactly one structural successor and the dealt card rides alongside the
+  node index at solve time. The test walks the live and flat trees in lockstep
+  using runout cards the builder never saw, which is what actually checks that.
+- `showdown-table.ts` precomputes every holding's strength against every runout:
+  **1,176 x 1,176 = 5.3 MiB, built in 0.8s**. This takes `evaluateHand` (~740ns a
+  call) out of the hot loop and replaces the unbounded string-keyed `bucketCache`,
+  which was the thing that would have killed any long run.
+
+**Phase 4 is next**: the vectorized core in a new `vector-cfr.ts`, consuming both
+of the above. Per-hand regret matching from pooled `Float32Array`s, O(n) fold and
+showdown terminals using the sorted prefix-sum trick with a per-card blocking
+correction, runout sampling at chance nodes. Then delete the bucketed sampler.
+
+Then phases 5–6: Nash distance, and the Web Worker + UI.
 
 ### Why cutting bet sizings is not a compromise
 
