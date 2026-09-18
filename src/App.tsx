@@ -15,8 +15,12 @@ const DEFAULT_BOARD = ['Ks', '9h', '4c']
 const DEFAULT_STACK = 100
 const DEFAULT_POT = 10
 
-const ITERATIONS = 20000
-const UPDATE_INTERVAL = 1000
+// The lean 3-size tree needs more iterations than the old rich one, and can
+// afford them: it settles at ~70k info sets instead of growing past 1.4M.
+// Measured on a flop, median visits per info set: 20k iters -> 2, 100k -> 4,
+// 300k -> 9 (the level at which a river solve produces sane output), at ~49s.
+const ITERATIONS = 200000
+const UPDATE_INTERVAL = 5000
 
 function App() {
   const [btnRange, setBtnRange] = useState<Range>(Range.empty())

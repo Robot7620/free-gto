@@ -11,10 +11,29 @@ keep hole cards exact. Full plan at
 a seeded RNG, per-info-set visit counts, and a river ground-truth fixture.
 14 tests passing.
 
-**Phase 2 is next** and hasn't been started: make `BET_FRACTIONS` /
-`MAX_AGGRESSIVE_ACTIONS` a config object, default to 50/pot/all-in with a 3-bet
-cap, collapse the degenerate all-in check-down chains, and raise the iteration
-count. Expected to cut the tree ~17x.
+**Phase 2 done**: bet sizings and the raise cap are now a `TreeConfig` carried on
+the node (`DEFAULT_TREE_CONFIG` = 50/pot/all-in, `RICH_TREE_CONFIG` = the old
+five-size tree, kept for comparison), and `advanceStreet` collapses the forced
+check/check runout once both stacks are empty.
+
+Measured on Ks9h4c, 100bb/10bb, seed 12345:
+
+| config | time | info sets | median visits | KK | 99 | AQo | 55 |
+|---|---|---|---|---|---|---|---|
+| rich 5-size,  20k | 13.1s | 534,651 | 1 | 73% | 50% | 69% | 68% |
+| lean 3-size,  20k |  3.1s |  48,413 | 2 | 33% | 43% | 56% | 80% |
+| lean 3-size, 100k | 15.5s |  63,538 | 4 | 33% | 60% | 23% | 59% |
+| lean 3-size, 300k | 48.8s |  70,347 | 9 | 39% | 53% | 22% | 40% |
+
+11x fewer info sets, and — the structural win — **info-set growth is now
+bounded**: 48k → 63k → 70k across 20k → 300k iterations, where the rich tree went
+657k → 1.4M and kept climbing. The target has stopped moving.
+
+Still not right, though, and worth being clear about what's left. At 300k the
+ordering is air 22% < top set 39% ≈ underpair 40% < middle set 53%. Air correctly
+settling lowest is new and good. But an underpair matching top set is not a real
+strategy, and that is the draw-blind bucketing, not sampling — which is what
+phases 3–5 exist to fix. Don't read the remaining gap as "needs more iterations".
 
 Then phases 3–6: precompute the public tree into flat arrays, the vectorized CFR
 core, Nash distance, and the Web Worker + UI.
