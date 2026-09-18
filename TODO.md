@@ -71,6 +71,42 @@ Sources: [Dynamic Sizing](https://blog.gtowizard.com/dynamic-sizing-a-gto-breakt
 [Dynamic Sizing 2.0](https://blog.gtowizard.com/introducing_dynamic_sizing_2/),
 [All you need to know about our solutions](https://blog.gtowizard.com/all-you-need-to-know-about-our-solutions/).
 
+### How many bet sizes we can afford (revisit after phase 4)
+
+Two sizes is constraining — a small c-bet is the standard play on a dry board and
+the tree can't express one. It was measured rather than argued. Flop Ks9h4c,
+100bb/10bb, 100k iterations, seed 12345, cap 3, all configs also get all-in:
+
+| sizes | config | time | info sets | median visits |
+|---|---|---|---|---|
+| 2 | **50/pot** (current) |  14.7s |    63,538 | 4 |
+| 2 | 33/pot               |  17.4s |    77,487 | 4 |
+| 3 | 33/75/pot            |  40.2s |   296,837 | 2 |
+| 3 | 33/50/pot            |  49.5s |   439,183 | 2 |
+| 3 | 25/50/pot            |  96.8s |   637,032 | 2 |
+| 4 | 25/33/50/pot         | 260.1s | 2,549,263 | 1 |
+
+A third size costs 5–10x the info sets and **halves** median visits; a fourth is
+40x and lands back at median 1, the level that produces noise. The extra sizing
+richness buys strategy we then can't solve for, so it's a net loss today.
+
+Two things that aren't obvious from the headline:
+
+- **Which sizes matter as much as how many.** 33/75/pot (297k) is half the cost of
+  25/50/pot (637k). Small bets leave more stack behind and open deeper raise
+  sequences, so a 25% bet is disproportionately expensive — not merely "one more
+  option".
+- **Swapping is cheap, adding is not.** 33/pot is only 22% more than 50/pot. If a
+  small c-bet matters more than a half-pot one, that swap is affordable now.
+  Deliberately not taken yet, to avoid tuning sizings twice.
+
+**Revisit immediately after phase 4.** Vectorized exact-hand CFR updates every
+info set exactly every iteration instead of sampling into them, so sample
+starvation stops being the binding constraint (~6 MB for the lean tree). That is
+where the headroom for 3–4 sizes lives. Don't retry this before then.
+
+Ignore the strategy percentages in that run — at median 1–4 visits they're noise.
+
 ### Two measurements worth not re-deriving
 
 Brute force was tested directly and **does converge, but to a washed-out answer**
