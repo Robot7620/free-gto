@@ -19,6 +19,39 @@ count. Expected to cut the tree ~17x.
 Then phases 3–6: precompute the public tree into flat arrays, the vectorized CFR
 core, Nash distance, and the Web Worker + UI.
 
+### Why cutting bet sizings is not a compromise
+
+Worth knowing before second-guessing phase 2: commercial solvers don't solve rich
+multi-size trees either. GTO Wizard's "Dynamic Sizing" starts from many candidate
+sizes and **iteratively prunes** — solve, find the size adding least value, remove
+it, re-solve, repeat to a target count — with an ML model scoring each size on
+frequency, EV and removal regret. The sizes that survive are chosen per decision
+point.
+
+Their published cost of doing this:
+
+- single-size river strategy: **0.05% of pot** vs the best alternative single size
+- single-size vs an **8-size** river strategy: **0.30% of pot**
+- single-size solutions overall: about **0.2bb** of EV
+
+And against Slumbot their **1-size** configuration performed *best*. Their framing:
+whether to bet or check matters far more than the size, and once frequencies are
+right most sizes have similar EV, especially on early streets. They ship
+single-size solutions as a headline feature.
+
+So 50/pot/all-in costs us tenths of a percent of pot — against a flop that
+currently returns noise.
+
+Where they're genuinely ahead is that their pruning is **adaptive** (surviving
+size varies by spot) where ours is fixed globally. That's a real future
+refinement, and it depends on being able to measure what each pruning decision
+costs — i.e. it sits on top of phase 5's Nash distance rather than competing with
+it. Sequence it there if it's ever wanted.
+
+Sources: [Dynamic Sizing](https://blog.gtowizard.com/dynamic-sizing-a-gto-breakthrough/),
+[Dynamic Sizing 2.0](https://blog.gtowizard.com/introducing_dynamic_sizing_2/),
+[All you need to know about our solutions](https://blog.gtowizard.com/all-you-need-to-know-about-our-solutions/).
+
 ### Two measurements worth not re-deriving
 
 Brute force was tested directly and **does converge, but to a washed-out answer**
