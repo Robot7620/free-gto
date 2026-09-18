@@ -1,5 +1,46 @@
 # TODO
 
+## Current state (2026-09-18)
+
+Working through a plan to fix flop convergence by switching to **vectorized
+exact-hand CFR** — the architecture real solvers use: abstract the betting tree,
+keep hole cards exact. Full plan at
+`~/.claude/plans/let-s-go-ahead-and-cryptic-horizon.md`.
+
+**Phase 1 done** (`6842f6b`): vitest, the invariant suite brought into the repo,
+a seeded RNG, per-info-set visit counts, and a river ground-truth fixture.
+14 tests passing.
+
+**Phase 2 is next** and hasn't been started: make `BET_FRACTIONS` /
+`MAX_AGGRESSIVE_ACTIONS` a config object, default to 50/pot/all-in with a 3-bet
+cap, collapse the degenerate all-in check-down chains, and raise the iteration
+count. Expected to cut the tree ~17x.
+
+Then phases 3–6: precompute the public tree into flat arrays, the vectorized CFR
+core, Nash distance, and the Web Worker + UI.
+
+### Two measurements worth not re-deriving
+
+Brute force was tested directly and **does converge, but to a washed-out answer**
+(10.5 min, 400k iterations, Ks9h4c):
+
+| iterations | info sets | KK | 99 | AQo | 55 |
+|---|---|---|---|---|---|
+| 20k  |   656,912 | 80% | 22% | 70% | 83% |
+| 150k | 1,173,968 | 69% | 58% | 63% | 83% |
+| 400k | 1,399,040 | 55% | 56% | 50% | 38% |
+
+55 does correct itself by 400k. But top set, middle set and pure air all land at
+50–56% — the abstraction washing out hand distinctions, not a sampling problem.
+That is the evidence for exact hands over more iterations.
+
+Second, **judge coverage by median, not mean.** At 20k iterations the river
+(which works) is median 9 visits per info set; turn and flop are both median 1.
+The mean flatters all three badly — even the working river solve leaves 84% of
+info sets under 30 visits, which is fine, because the lines that get reached are
+the ones that get sampled. An earlier "37 per info set" figure was a mean and
+should be ignored.
+
 ## 0. Finish multi-street solving (this branch - pick up here)
 
 Structurally working, not converged. The river is genuinely correct; the flop is
