@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react'
+import { useState, useEffect } from 'react'
 import { Range } from './engine/range'
 import { Card as CardType, stringToCard } from './engine/cards'
 import { RangeGrid } from './components/RangeGrid'
@@ -42,27 +42,23 @@ function App() {
     setIsSolving(true)
     setSolveProgress(0)
 
-    const demoHand1: CardType[] = [stringToCard('Ah'), stringToCard('Kh')]
-    const demoHand2: CardType[] = [stringToCard('Qd'), stringToCard('Jd')]
-
     const solver = new CFRSolver()
-    const rootNode = createInitialNode('BTN', 100, 10, board)
+    const rootNode = createInitialNode(100, 10, board)
 
-    const iterations = 1000
-    const updateInterval = 100
+    const iterations = 20000
+    const updateInterval = 1000
 
     for (let i = 0; i < iterations; i += updateInterval) {
       await new Promise(resolve => setTimeout(resolve, 0))
 
-      solver.solve(rootNode, [demoHand1, demoHand2], updateInterval)
+      solver.solve(rootNode, [btnRange, bbRange], board, updateInterval)
       setSolveProgress(((i + updateInterval) / iterations) * 100)
     }
 
-    const strategies = solver.getAllStrategies()
-    const firstStrategy = Array.from(strategies.values())[0]
+    const rangeStrategy = solver.getRangeStrategy(btnRange, board)
 
-    if (firstStrategy) {
-      const actions: StrategyAction[] = Array.from(firstStrategy.entries()).map(
+    if (rangeStrategy.size > 0) {
+      const actions: StrategyAction[] = Array.from(rangeStrategy.entries()).map(
         ([action, frequency]) => ({
           action,
           frequency,
@@ -138,9 +134,9 @@ function App() {
                 This demo uses Counterfactual Regret Minimization (CFR) to compute GTO strategies.
               </p>
               <ul className="list-disc list-inside space-y-1">
-                <li>1000 iterations for demo (real solves use 10k+)</li>
-                <li>Simplified bet sizing (33%, 50%, 75%, pot)</li>
-                <li>Single street solving</li>
+                <li>20,000 iterations, chance-sampled over both ranges</li>
+                <li>Simplified bet sizing (33%, 50%, 75%, pot, all-in)</li>
+                <li>Single street solving, max 3 bets/raises</li>
               </ul>
             </div>
           </div>

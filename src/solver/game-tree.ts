@@ -1,11 +1,14 @@
 import { Card } from '../engine/cards'
-import { Position, Street } from '../utils/poker'
+import { Street } from '../utils/poker'
 
 export interface GameNode {
   id: string
   player: number
   pot: number
   stack: number[]
+  // Chips each player has put into the pot so far. Payoffs are settled
+  // against these, so they have to stay in sync with pot/stack.
+  contributed: number[]
   street: Street
   board: Card[]
   history: string
@@ -14,47 +17,77 @@ export interface GameNode {
   payoff?: number[]
 }
 
+const BET_FRACTIONS: [string, number][] = [
+  ['bet33', 0.33],
+  ['bet50', 0.5],
+  ['bet75', 0.75],
+  ['betpot', 1],
+]
+
+// Cap the betting escalation per street, the way solver configs do. Without a
+// cap the tree only bottoms out when a stack empties, which explodes its size
+// for no real strategic gain.
+const MAX_AGGRESSIVE_ACTIONS = 3
+
+function countAggressiveActions(history: string): number {
+  if (!history) return 0
+  return history
+    .split('/')
+    .filter(a => a.startsWith('bet') || a === 'allin')
+    .length
+}
+
+// Chips the actor must add for a given bet/raise action.
+export function actionCost(
+  action: string,
+  pot: number,
+  stack: number,
+  toCall: number
+): number {
+  if (action === 'fold' || action === 'check') return 0
+  if (action === 'call') return Math.min(stack, toCall)
+  if (action === 'allin') return stack
+
+  const fraction = BET_FRACTIONS.find(([label]) => label === action)?.[1]
+  if (fraction === undefined) return 0
+
+  // Size the raise off the pot as it would stand after the call.
+  const raise = (pot + toCall) * fraction
+  return Math.min(stack, toCall + raise)
+}
+
 export function generateActions(
   pot: number,
   stack: number,
   toCall: number,
-  canCheck: boolean
+  allowAggression: boolean = true
 ): string[] {
   const actions: string[] = []
 
-  if (canCheck) {
-    actions.push('check')
-  } else {
+  if (toCall > 0) {
     actions.push('fold')
-    if (toCall > 0) {
-      actions.push('call')
-    }
+    actions.push('call')
+  } else {
+    actions.push('check')
   }
 
-  const minBet = Math.max(toCall * 2, Math.min(stack, pot * 0.33))
-  const maxBet = stack
-
-  if (maxBet > 0) {
-    const betSizes = [
-      { label: 'bet33', size: pot * 0.33 },
-      { label: 'bet50', size: pot * 0.5 },
-      { label: 'bet75', size: pot * 0.75 },
-      { label: 'betpot', size: pot },
-      { label: 'allin', size: maxBet },
-    ]
-
-    betSizes.forEach(({ label, size }) => {
-      if (size >= minBet && size <= maxBet) {
+  if (allowAggression && stack > toCall) {
+    BET_FRACTIONS.forEach(([label]) => {
+      const cost = actionCost(label, pot, stack, toCall)
+      const raise = cost - toCall
+      // Must be a legal raise (at least matching what's owed) and leave the
+      // actor with chips behind - otherwise it's just an all-in.
+      if (raise >= Math.max(toCall, 0) && raise > 0 && cost < stack) {
         actions.push(label)
       }
     })
+    actions.push('allin')
   }
 
   return actions
 }
 
 export function createInitialNode(
-  position: Position,
   stack: number,
   pot: number,
   board: Card[] = []
@@ -64,65 +97,72 @@ export function createInitialNode(
     player: 0,
     pot,
     stack: [stack, stack],
+    // The starting pot came from earlier streets, split evenly.
+    contributed: [pot / 2, pot / 2],
     street: board.length === 0 ? 'preflop' : 'flop',
     board,
     history: '',
-    actions: generateActions(pot, stack, 0, true),
+    actions: generateActions(pot, stack, 0),
     isTerminal: false,
   }
 }
 
 export function applyAction(node: GameNode, action: string): GameNode {
+  const player = node.player
+  const opponent = 1 - player
   const newHistory = node.history + (node.history ? '/' : '') + action
-  const nextPlayer = (node.player + 1) % 2
+  const toCall = Math.max(0, node.contributed[opponent] - node.contributed[player])
 
+  const newStack = [...node.stack]
+  const newContributed = [...node.contributed]
   let newPot = node.pot
-  let newStack = [...node.stack]
   let isTerminal = false
   let payoff: number[] | undefined
 
   if (action === 'fold') {
+    // The folder forfeits what they put in; the opponent can only win what
+    // they actually matched, so anything above that comes back to them.
+    const atRisk = Math.min(node.contributed[player], node.contributed[opponent])
     isTerminal = true
-    payoff = node.player === 0 ? [-node.stack[0], node.stack[0]] : [node.stack[1], -node.stack[1]]
-  } else if (action === 'call') {
-    const callAmount = Math.min(node.stack[node.player], node.pot / 2)
-    newPot += callAmount
-    newStack[node.player] -= callAmount
-    // A call always closes the betting round (single-street model: goes to
-    // showdown - leave payoff unset so cfr.ts evaluates the hands).
-    isTerminal = true
-  } else if (action.startsWith('bet') || action === 'allin') {
-    let betAmount = 0
-    if (action === 'bet33') betAmount = node.pot * 0.33
-    else if (action === 'bet50') betAmount = node.pot * 0.5
-    else if (action === 'bet75') betAmount = node.pot * 0.75
-    else if (action === 'betpot') betAmount = node.pot
-    else if (action === 'allin') betAmount = node.stack[node.player]
+    payoff = []
+    payoff[player] = -atRisk
+    payoff[opponent] = atRisk
+  } else {
+    const cost = actionCost(action, node.pot, node.stack[player], toCall)
+    newStack[player] -= cost
+    newContributed[player] += cost
+    newPot += cost
 
-    betAmount = Math.min(betAmount, node.stack[node.player])
-    newPot += betAmount
-    newStack[node.player] -= betAmount
+    // A call closes the action, as does a check behind another check.
+    // Single-street model, so that means showdown - leave payoff unset so
+    // cfr.ts settles it against the hands.
+    const lastAction = node.history.split('/').pop()
+    if (action === 'call') {
+      isTerminal = true
+    } else if (action === 'check' && lastAction === 'check') {
+      isTerminal = true
+    }
   }
 
-  // A check that follows the opponent's check also closes the betting
-  // round (single-street model: goes to showdown).
-  const lastAction = node.history.split('/').pop()
-  if (action === 'check' && lastAction === 'check') {
-    isTerminal = true
-  }
-
-  const canCheck = action === 'check' || action === 'call'
-  const toCall = action.startsWith('bet') || action === 'allin' ? newPot / 2 : 0
+  const nextToCall = Math.max(0, newContributed[player] - newContributed[opponent])
 
   return {
     id: newHistory,
-    player: nextPlayer,
+    player: opponent,
     pot: newPot,
     stack: newStack,
+    contributed: newContributed,
     street: node.street,
     board: node.board,
     history: newHistory,
-    actions: isTerminal ? [] : generateActions(newPot, newStack[nextPlayer], toCall, canCheck),
+    actions: isTerminal
+      ? []
+      : generateActions(
+          newPot,
+          newStack[opponent],
+          nextToCall,
+          countAggressiveActions(newHistory) < MAX_AGGRESSIVE_ACTIONS
+        ),
     isTerminal,
     payoff,
   }

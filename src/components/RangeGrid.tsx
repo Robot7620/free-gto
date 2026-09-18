@@ -42,7 +42,6 @@ export const RangeGrid: React.FC<RangeGridProps> = ({ range, onCellClick, title 
               const weight = range.getWeight(combo)
               const colorClass = getColorForWeight(weight)
               const isPair = combo.length === 2
-              const isSuited = combo.endsWith('s')
 
               return (
                 <button

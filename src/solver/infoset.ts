@@ -71,6 +71,11 @@ export class InfoSetManager {
     return this.infoSets.get(key)!
   }
 
+  // Look up without creating one when it's missing.
+  find(key: string): InfoSet | undefined {
+    return this.infoSets.get(key)
+  }
+
   getAllInfoSets(): InfoSet[] {
     return Array.from(this.infoSets.values())
   }
