@@ -11,7 +11,9 @@ export class InfoSet {
     })
   }
 
-  getStrategy(realizationWeight: number = 1): Map<string, number> {
+  // Regret matching. Pure - accumulating toward the average strategy is a
+  // separate step because external sampling does the two at different nodes.
+  currentStrategy(): Map<string, number> {
     const strategy = new Map<string, number>()
     let normalizingSum = 0
 
@@ -29,12 +31,13 @@ export class InfoSet {
       }
     })
 
-    this.actions.forEach(action => {
-      const prob = strategy.get(action) || 0
-      this.strategySum.set(action, (this.strategySum.get(action) || 0) + realizationWeight * prob)
-    })
-
     return strategy
+  }
+
+  accumulateStrategy(strategy: Map<string, number>, weight: number = 1): void {
+    strategy.forEach((prob, action) => {
+      this.strategySum.set(action, (this.strategySum.get(action) || 0) + weight * prob)
+    })
   }
 
   getAverageStrategy(): Map<string, number> {

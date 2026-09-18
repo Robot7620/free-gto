@@ -1,4 +1,4 @@
-import { Card } from '../engine/cards'
+import { Card, cardToString } from '../engine/cards'
 import { Street } from '../utils/poker'
 
 export interface GameNode {
@@ -6,14 +6,20 @@ export interface GameNode {
   player: number
   pot: number
   stack: number[]
-  // Chips each player has put into the pot so far. Payoffs are settled
-  // against these, so they have to stay in sync with pot/stack.
+  // Total chips each player has put in across the whole hand. Payoffs settle
+  // against these.
   contributed: number[]
+  // Chips each player has put in during the current betting round only. This
+  // is what "amount to call" is derived from, so it resets every street.
+  streetContributed: number[]
   street: Street
   board: Card[]
   history: string
   actions: string[]
   isTerminal: boolean
+  // Betting closed before the river: the next card has to be dealt before
+  // play continues.
+  isChance: boolean
   payoff?: number[]
 }
 
@@ -29,12 +35,28 @@ const BET_FRACTIONS: [string, number][] = [
 // for no real strategic gain.
 const MAX_AGGRESSIVE_ACTIONS = 3
 
+// Streets are separated by '|' in the history, so the current round's actions
+// are whatever follows the last separator.
+function currentStreetHistory(history: string): string {
+  const segment = history.split('|').pop() ?? ''
+  // A street segment starts with the runout card, e.g. "Kd:check/bet50".
+  return segment.includes(':') ? segment.slice(segment.indexOf(':') + 1) : segment
+}
+
 function countAggressiveActions(history: string): number {
-  if (!history) return 0
-  return history
+  const segment = currentStreetHistory(history)
+  if (!segment) return 0
+  return segment
     .split('/')
     .filter(a => a.startsWith('bet') || a === 'allin')
     .length
+}
+
+export function streetForBoard(board: Card[]): Street {
+  if (board.length >= 5) return 'river'
+  if (board.length === 4) return 'turn'
+  if (board.length === 3) return 'flop'
+  return 'preflop'
 }
 
 // Chips the actor must add for a given bet/raise action.
@@ -87,6 +109,9 @@ export function generateActions(
   return actions
 }
 
+// Out of position (player 1) acts first on every postflop street.
+const FIRST_TO_ACT = 1
+
 export function createInitialNode(
   stack: number,
   pot: number,
@@ -94,29 +119,59 @@ export function createInitialNode(
 ): GameNode {
   return {
     id: 'root',
-    player: 0,
+    player: FIRST_TO_ACT,
     pot,
     stack: [stack, stack],
     // The starting pot came from earlier streets, split evenly.
     contributed: [pot / 2, pot / 2],
-    street: board.length === 0 ? 'preflop' : 'flop',
+    streetContributed: [0, 0],
+    street: streetForBoard(board),
     board,
     history: '',
     actions: generateActions(pot, stack, 0),
     isTerminal: false,
+    isChance: false,
+  }
+}
+
+// Deal the next board card and open a fresh betting round on it.
+export function advanceStreet(node: GameNode, card: Card): GameNode {
+  const board = [...node.board, card]
+  const history = `${node.history}|${cardToString(card)}:`
+
+  return {
+    id: history,
+    player: FIRST_TO_ACT,
+    pot: node.pot,
+    stack: [...node.stack],
+    contributed: [...node.contributed],
+    // New betting round: nobody owes anything yet.
+    streetContributed: [0, 0],
+    street: streetForBoard(board),
+    board,
+    history,
+    actions: generateActions(node.pot, node.stack[FIRST_TO_ACT], 0),
+    isTerminal: false,
+    isChance: false,
   }
 }
 
 export function applyAction(node: GameNode, action: string): GameNode {
   const player = node.player
   const opponent = 1 - player
-  const newHistory = node.history + (node.history ? '/' : '') + action
-  const toCall = Math.max(0, node.contributed[opponent] - node.contributed[player])
+  const separator = node.history === '' || node.history.endsWith(':') ? '' : '/'
+  const newHistory = node.history + separator + action
+  const toCall = Math.max(
+    0,
+    node.streetContributed[opponent] - node.streetContributed[player]
+  )
 
   const newStack = [...node.stack]
   const newContributed = [...node.contributed]
+  const newStreetContributed = [...node.streetContributed]
   let newPot = node.pot
   let isTerminal = false
+  let isChance = false
   let payoff: number[] | undefined
 
   if (action === 'fold') {
@@ -131,20 +186,30 @@ export function applyAction(node: GameNode, action: string): GameNode {
     const cost = actionCost(action, node.pot, node.stack[player], toCall)
     newStack[player] -= cost
     newContributed[player] += cost
+    newStreetContributed[player] += cost
     newPot += cost
 
-    // A call closes the action, as does a check behind another check.
-    // Single-street model, so that means showdown - leave payoff unset so
-    // cfr.ts settles it against the hands.
-    const lastAction = node.history.split('/').pop()
-    if (action === 'call') {
-      isTerminal = true
-    } else if (action === 'check' && lastAction === 'check') {
-      isTerminal = true
+    // A call closes the round, as does a check behind another check.
+    const streetActions = currentStreetHistory(node.history).split('/').filter(Boolean)
+    const lastAction = streetActions[streetActions.length - 1]
+    const roundClosed =
+      action === 'call' || (action === 'check' && lastAction === 'check')
+
+    if (roundClosed) {
+      // River means showdown; otherwise the next card gets dealt. Payoff is
+      // left unset either way so cfr.ts settles it against the hands.
+      if (node.street === 'river') {
+        isTerminal = true
+      } else {
+        isChance = true
+      }
     }
   }
 
-  const nextToCall = Math.max(0, newContributed[player] - newContributed[opponent])
+  const nextToCall = Math.max(
+    0,
+    newStreetContributed[player] - newStreetContributed[opponent]
+  )
 
   return {
     id: newHistory,
@@ -152,18 +217,21 @@ export function applyAction(node: GameNode, action: string): GameNode {
     pot: newPot,
     stack: newStack,
     contributed: newContributed,
+    streetContributed: newStreetContributed,
     street: node.street,
     board: node.board,
     history: newHistory,
-    actions: isTerminal
-      ? []
-      : generateActions(
-          newPot,
-          newStack[opponent],
-          nextToCall,
-          countAggressiveActions(newHistory) < MAX_AGGRESSIVE_ACTIONS
-        ),
+    actions:
+      isTerminal || isChance
+        ? []
+        : generateActions(
+            newPot,
+            newStack[opponent],
+            nextToCall,
+            countAggressiveActions(newHistory) < MAX_AGGRESSIVE_ACTIONS
+          ),
     isTerminal,
+    isChance,
     payoff,
   }
 }

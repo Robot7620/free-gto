@@ -1,5 +1,58 @@
 # TODO
 
+## 0. Finish multi-street solving (this branch - pick up here)
+
+Structurally working, not converged. The river is genuinely correct; the flop is
+not. **Do not merge to master as-is** — flop solves are worse than the
+single-street version on master, which at least converged.
+
+State as of the last session, solving BTN vs BB on Ks 9h 4c, 100bb, 10bb pot,
+20k iterations:
+
+| Street | Info sets | Time  | Quality                                        |
+|--------|-----------|-------|------------------------------------------------|
+| River  | 2,572     | 0.8s  | Correct: KK bets 72%, 55 checks 66%, AQo 60%   |
+| Turn   | 107,805   | 4.7s  | Marginal                                        |
+| Flop   | 658,646   | 14.3s | Not converged: 55 bets 66%, AQo bets 70%       |
+
+At 658k info sets and 20k iterations each one is visited ~0.03 times, so regret
+matching never gets enough samples and the result is close to the uniform
+strategy it starts from.
+
+Next steps, in the order worth trying:
+
+1. **Cut the bet sizings.** This is the biggest lever by far — lines per street
+   scale with the action count, and it compounds across three streets, so going
+   from 5 sizings to 2 should shrink the tree by roughly an order of magnitude.
+   See `BET_FRACTIONS` in `src/solver/game-tree.ts`.
+2. **Then re-check convergence.** A test was written for this but never
+   finished running: solve at 20k/60k/150k/400k iterations and watch whether
+   strong hands separate from weak ones (KK and 99 should get more aggressive
+   than 55 and AQo). If the ordering doesn't separate as iterations climb,
+   something is structurally wrong rather than just under-sampled.
+3. **Verify the tree invariants.** Never completed. Worth asserting: chips
+   conserved (`pot === contributed[0] + contributed[1]`), payoffs zero-sum,
+   `streetContributed` resets to [0,0] on each new street, street never
+   regresses, no node is `isChance` on the river, and the 3-bet cap holds.
+
+### Design decisions worth knowing before changing this
+
+- **External-sampling MCCFR** (`traverse` in `src/solver/cfr.ts`). Only the
+  traversing player's nodes branch across every action; opponent nodes and
+  chance nodes sample one outcome. Full traversal was ~10^6 nodes per iteration
+  across three streets, which is hopeless.
+- **Hand-strength bucketing** (`handBucket`). Info sets key on the hand's
+  strength category on the *current* board rather than the exact holding, so the
+  45-turn x 44-river runout explosion collapses. Keying on exact cards OOMs at
+  2GB. This is deliberate **imperfect recall** — standard in poker abstraction,
+  but it weakens CFR's convergence guarantees and it isn't documented in the
+  README yet.
+- **Runout cards are stripped from the info set key** (`bettingLine`) for the
+  same reason; which card came is already reflected in the strength bucket.
+- **OOP acts first on every street** now, which is correct postflop but changed
+  which player sits at the root — the UI had to be reworked for it, and the two
+  strategy panels read from different nodes (`''` for BB, `'check'` for BTN).
+
 ## 1. Show per-hand strategy in the range grid (priority)
 
 The solver computes a distinct strategy for every holding, but the UI only shows

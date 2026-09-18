@@ -25,6 +25,7 @@ function App() {
   const [stack, setStack] = useState(DEFAULT_STACK)
   const [pot, setPot] = useState(DEFAULT_POT)
   const [strategy, setStrategy] = useState<StrategyAction[]>([])
+  const [btnStrategy, setBtnStrategy] = useState<StrategyAction[]>([])
   const [isSolving, setIsSolving] = useState(false)
   const [solveProgress, setSolveProgress] = useState(0)
 
@@ -39,6 +40,7 @@ function App() {
     setStack(DEFAULT_STACK)
     setPot(DEFAULT_POT)
     setStrategy([])
+    setBtnStrategy([])
   }
 
   // Any change to the spot invalidates the strategy that was solved for it.
@@ -47,6 +49,7 @@ function App() {
     next.setWeight(combo, range.getWeight(combo) > 0 ? 0 : 1)
     setRange(next)
     setStrategy([])
+    setBtnStrategy([])
   }
 
   function toggleBoardCard(card: CardType) {
@@ -54,6 +57,7 @@ function App() {
     const exists = board.some(c => cardToNumber(c) === n)
     setBoard(exists ? board.filter(c => cardToNumber(c) !== n) : [...board, card])
     setStrategy([])
+    setBtnStrategy([])
   }
 
   const canSolve =
@@ -73,14 +77,13 @@ function App() {
       setSolveProgress(((i + UPDATE_INTERVAL) / ITERATIONS) * 100)
     }
 
-    const rangeStrategy = solver.getRangeStrategy(btnRange, board)
+    const toActions = (s: Map<string, number>): StrategyAction[] =>
+      Array.from(s.entries()).map(([action, frequency]) => ({ action, frequency }))
 
-    setStrategy(
-      Array.from(rangeStrategy.entries()).map(([action, frequency]) => ({
-        action,
-        frequency,
-      }))
-    )
+    // OOP acts first postflop, so BB's opening decision is the root and BTN's
+    // first decision is the node after BB checks.
+    setStrategy(toActions(solver.getRangeStrategy(bbRange, board)))
+    setBtnStrategy(toActions(solver.getRangeStrategy(btnRange, board, 'check')))
 
     setIsSolving(false)
     setSolveProgress(100)
@@ -139,6 +142,7 @@ function App() {
                   onChange={e => {
                     setStack(Math.max(1, Number(e.target.value) || 0))
                     setStrategy([])
+                    setBtnStrategy([])
                   }}
                   className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
                 />
@@ -156,6 +160,7 @@ function App() {
                   onChange={e => {
                     setPot(Math.max(1, Number(e.target.value) || 0))
                     setStrategy([])
+                    setBtnStrategy([])
                   }}
                   className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
                 />
@@ -165,8 +170,8 @@ function App() {
         </div>
 
         <p className="text-gray-600 mb-4 text-sm">
-          Click any hand in a range to add or remove it. BTN acts first in this
-          single-street model.
+          Click any hand in a range to add or remove it. BB is out of position and
+          acts first on every street.
         </p>
 
         <div className="grid grid-cols-1 xl:grid-cols-2 gap-6 mb-6">
@@ -187,16 +192,22 @@ function App() {
         </div>
 
         <div className="grid grid-cols-1 xl:grid-cols-2 gap-6 mb-6">
-          {strategy.length > 0 ? (
-            <StrategyTable strategies={strategy} title="BTN Strategy (IP)" />
-          ) : (
-            <div className="bg-white p-4 rounded-lg shadow-md">
-              <h3 className="text-lg font-semibold mb-3">BTN Strategy (IP)</h3>
-              <p className="text-gray-500 text-sm">
-                Solve the spot to see the strategy for this range.
-              </p>
-            </div>
-          )}
+          <div className="space-y-6">
+            {strategy.length > 0 ? (
+              <StrategyTable strategies={strategy} title={`BB (OOP) - first to act on the ${streetLabel.toLowerCase()}`} />
+            ) : (
+              <div className="bg-white p-4 rounded-lg shadow-md">
+                <h3 className="text-lg font-semibold mb-3">BB Strategy (OOP)</h3>
+                <p className="text-gray-500 text-sm">
+                  Solve the spot to see the strategy for this range.
+                </p>
+              </div>
+            )}
+
+            {btnStrategy.length > 0 && (
+              <StrategyTable strategies={btnStrategy} title="BTN (IP) - after BB checks" />
+            )}
+          </div>
 
           <div className="bg-white p-4 rounded-lg shadow-md">
             <h3 className="text-lg font-semibold mb-3">Solver Controls</h3>

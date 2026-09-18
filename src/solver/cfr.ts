@@ -1,6 +1,6 @@
-import { GameNode, applyAction } from './game-tree'
+import { GameNode, applyAction, advanceStreet } from './game-tree'
 import { InfoSet, InfoSetManager } from './infoset'
-import { Card, cardToNumber } from '../engine/cards'
+import { Card, cardToNumber, createDeck, removeCards } from '../engine/cards'
 import { evaluateHand } from '../engine/evaluator'
 import { Range } from '../engine/range'
 import { enumerateRangeCombos, sampleCombo, conflictsWith } from '../engine/combos'
@@ -11,91 +11,143 @@ export interface CFRResult {
   exploitability?: number
 }
 
+// Strip the dealt runout cards out of a history, leaving just the betting line
+// (streets still separated by '|'). Which card came is already reflected in the
+// player's strength bucket, so keeping it in the key too would split one
+// decision into 45 near-identical ones.
+export function bettingLine(history: string): string {
+  return history
+    .split('|')
+    .map(segment => (segment.includes(':') ? segment.slice(segment.indexOf(':') + 1) : segment))
+    .join('|')
+}
+
+function sampleAction(strategy: Map<string, number>, actions: string[]): string {
+  let target = Math.random()
+  for (const action of actions) {
+    target -= strategy.get(action) || 0
+    if (target <= 0) return action
+  }
+  return actions[actions.length - 1]
+}
+
 export class CFRSolver {
   private infoSetManager: InfoSetManager
   private iterations: number = 0
+  private bucketCache: Map<string, number> = new Map()
 
   constructor() {
     this.infoSetManager = new InfoSetManager()
   }
 
-  private getInfoSetKey(history: string, hand: Card[]): string {
-    // Sort so the same holding always maps to one info set regardless of the
-    // order the two cards happen to be in.
-    const handStr = [...hand]
-      .sort((a, b) => cardToNumber(b) - cardToNumber(a))
-      .map(c => `${c.rank}:${c.suit}`)
-      .join(',')
-    return `${handStr}|${history}`
+  // Hand strength on the current board, bucketed. The evaluator packs the hand
+  // category into the high bits and the primary rank just below, so shifting
+  // off the kickers leaves "category + top rank" - enough to keep top pair and
+  // bottom pair apart without tracking every holding separately.
+  private handBucket(hand: Card[], board: Card[]): number {
+    const key =
+      hand.map(cardToNumber).sort((a, b) => a - b).join(',') +
+      '/' +
+      board.map(cardToNumber).join(',')
+
+    const cached = this.bucketCache.get(key)
+    if (cached !== undefined) return cached
+
+    const bucket = evaluateHand([...hand, ...board]).value >>> 16
+    this.bucketCache.set(key, bucket)
+    return bucket
   }
 
-  private cfr(
+  private getInfoSetKey(history: string, hand: Card[], board: Card[]): string {
+    return `${this.handBucket(hand, board)}|${bettingLine(history)}`
+  }
+
+  // Value of a finished hand from `traverser`'s point of view.
+  private terminalUtility(
     node: GameNode,
     hands: [Card[], Card[]],
-    reach: [number, number]
-  ): number[] {
-    const numPlayers = 2
+    traverser: number
+  ): number {
+    if (node.payoff) {
+      return node.payoff[traverser]
+    }
 
+    const value0 = evaluateHand([...hands[0], ...node.board]).value
+    const value1 = evaluateHand([...hands[1], ...node.board]).value
+
+    // The winner takes what the loser matched; anything either player put in
+    // beyond that comes back to them, so a tie nets zero.
+    const atRisk = Math.min(node.contributed[0], node.contributed[1])
+    if (value0 === value1) return 0
+
+    const winner = value0 > value1 ? 0 : 1
+    return traverser === winner ? atRisk : -atRisk
+  }
+
+  private sampleRunout(node: GameNode, deck: Card[]): Card | null {
+    // `deck` excludes the root board and both holdings; only cards dealt on
+    // later streets still need filtering out.
+    const dealt = new Set(node.board.map(cardToNumber))
+    const available = deck.filter(c => !dealt.has(cardToNumber(c)))
+    if (available.length === 0) return null
+    return available[Math.floor(Math.random() * available.length)]
+  }
+
+  // External-sampling MCCFR. Only the traverser's own decision nodes branch
+  // across every action; the opponent's nodes and chance nodes each sample a
+  // single outcome. Full traversal is hopeless once the tree spans three
+  // streets - the runouts alone multiply it out of reach.
+  private traverse(
+    node: GameNode,
+    hands: [Card[], Card[]],
+    traverser: number,
+    deck: Card[]
+  ): number {
     if (node.isTerminal) {
-      if (node.payoff) {
-        return node.payoff
-      }
+      return this.terminalUtility(node, hands, traverser)
+    }
 
-      const fullHand0 = [...hands[0], ...node.board]
-      const fullHand1 = [...hands[1], ...node.board]
-
-      const value0 = evaluateHand(fullHand0).value
-      const value1 = evaluateHand(fullHand1).value
-
-      // The winner takes what the loser matched; anything either player put in
-      // beyond that comes back to them, so a tie nets zero.
-      const atRisk = Math.min(node.contributed[0], node.contributed[1])
-      if (value0 > value1) {
-        return [atRisk, -atRisk]
-      } else if (value1 > value0) {
-        return [-atRisk, atRisk]
-      } else {
-        return [0, 0]
-      }
+    if (node.isChance) {
+      const card = this.sampleRunout(node, deck)
+      if (!card) return this.terminalUtility(node, hands, traverser)
+      return this.traverse(advanceStreet(node, card), hands, traverser, deck)
     }
 
     const player = node.player
-    const infoSetKey = this.getInfoSetKey(node.history, hands[player])
+    const infoSetKey = this.getInfoSetKey(node.history, hands[player], node.board)
     const infoSet = this.infoSetManager.getInfoSet(infoSetKey, node.actions)
+    const strategy = infoSet.currentStrategy()
 
-    const strategy = infoSet.getStrategy(reach[player])
+    if (player !== traverser) {
+      // Opponent node: accumulate their average strategy and follow one action.
+      infoSet.accumulateStrategy(strategy)
+      const action = sampleAction(strategy, node.actions)
+      return this.traverse(applyAction(node, action), hands, traverser, deck)
+    }
 
-    const actionUtils: Map<string, number[]> = new Map()
-    const nodeUtil: number[] = [0, 0]
+    const utils = new Map<string, number>()
+    let nodeUtil = 0
 
     node.actions.forEach(action => {
-      const newNode = applyAction(node, action)
-      const actionProb = strategy.get(action) || 0
-
-      const newReach: [number, number] = [...reach]
-      newReach[player] *= actionProb
-
-      const util = this.cfr(newNode, hands, newReach)
-      actionUtils.set(action, util)
-
-      for (let p = 0; p < numPlayers; p++) {
-        nodeUtil[p] += actionProb * util[p]
-      }
+      const util = this.traverse(applyAction(node, action), hands, traverser, deck)
+      utils.set(action, util)
+      nodeUtil += (strategy.get(action) || 0) * util
     })
 
+    // Under external sampling the opponent's reach is already accounted for by
+    // the sampling, so regrets take no extra weighting.
     node.actions.forEach(action => {
-      const util = actionUtils.get(action)!
-      const regret = util[player] - nodeUtil[player]
-      infoSet.addRegret(action, reach[1 - player] * regret)
+      infoSet.addRegret(action, (utils.get(action) || 0) - nodeUtil)
     })
 
     return nodeUtil
   }
 
-  // Chance-sampled CFR: each iteration deals one holding to each player from
-  // their range (proportional to combo weight, excluding cards already on the
-  // board or held by the opponent), then runs vanilla CFR on that deal. Over
-  // many iterations this converges to the range-vs-range equilibrium.
+  // Each iteration deals a holding to each player from their range
+  // (proportional to combo weight, excluding cards on the board or held by the
+  // opponent), then runs one external-sampling traversal. The traverser
+  // alternates so both players' strategies improve. Over many iterations this
+  // converges to the range-vs-range equilibrium.
   solve(
     rootNode: GameNode,
     ranges: [Range, Range],
@@ -104,6 +156,7 @@ export class CFRSolver {
   ): CFRResult {
     const combos0 = enumerateRangeCombos(ranges[0], board)
     const combos1 = enumerateRangeCombos(ranges[1], board)
+    const fullDeck = createDeck()
 
     for (let i = 0; i < iterations; i++) {
       const hand0 = sampleCombo(combos0)
@@ -113,7 +166,10 @@ export class CFRSolver {
       const hand1 = sampleCombo(available1)
       if (!hand1) continue
 
-      this.cfr(rootNode, [hand0.cards, hand1.cards], [1, 1])
+      const hands: [Card[], Card[]] = [hand0.cards, hand1.cards]
+      const deck = removeCards(fullDeck, [...board, ...hands[0], ...hands[1]])
+
+      this.traverse(rootNode, hands, this.iterations % 2, deck)
       this.iterations++
     }
 
@@ -134,7 +190,7 @@ export class CFRSolver {
     let totalWeight = 0
 
     enumerateRangeCombos(range, board).forEach(({ cards, weight }) => {
-      const infoSet = this.infoSetManager.find(this.getInfoSetKey(history, cards))
+      const infoSet = this.infoSetManager.find(this.getInfoSetKey(history, cards, board))
       if (!infoSet) return
 
       infoSet.getAverageStrategy().forEach((prob, action) => {
@@ -166,6 +222,7 @@ export class CFRSolver {
 
   reset(): void {
     this.infoSetManager.clear()
+    this.bucketCache.clear()
     this.iterations = 0
   }
 }
