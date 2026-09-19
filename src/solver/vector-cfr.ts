@@ -1,8 +1,9 @@
-import { Card, cardToNumber, createDeck, RANK_CHARS } from '../engine/cards'
+import { Card, cardToNumber, createDeck, numberToCard, RANK_CHARS } from '../engine/cards'
 import { Range } from '../engine/range'
 import { enumerateRangeCombos } from '../engine/combos'
 import { TreeConfig, DEFAULT_TREE_CONFIG } from './game-tree'
-import { PublicTree, buildPublicTree, CHANCE, TERMINAL } from './public-tree'
+import { PublicTree, buildPublicTree, chanceChildFor, CHANCE, TERMINAL } from './public-tree'
+import { runoutClass } from './runout-class'
 import { ShowdownTable, buildShowdownTable } from './showdown-table'
 import { HandSet, makeHandSet, showdownValues, foldValues, rankOrder } from './showdown-values'
 import { Rng, makeRng } from './rng'
@@ -18,10 +19,20 @@ import { Rng, makeRng } from './rng'
 // tree and the runout are abstracted.
 //
 // What is still abstracted, and it matters: regrets are keyed on
-// (public tree node, hand). The public tree node does not record WHICH card
-// fell, so turn and river strategies are averaged over runouts. A river solve
-// has no runouts left and is therefore exact - that is the correctness gate.
-// See TODO.md for what lifting this would cost.
+// (public tree node, hand), and the public tree node records the runout only as
+// far as its texture class. At runoutClasses = 1 that is no information at all
+// and turn and river strategies are averaged over every card. Above that the
+// chance node branches per class, so the solver can play a flush-completing
+// turn differently from a brick, but still not one brick differently from
+// another. A river solve has no runouts left and is therefore exact at every K
+// - that is the correctness gate, and it is also why the river must not move
+// when K does.
+
+// K=4: pair / flush / overcard / brick. Measured against K=1 on the same seed
+// and iteration count, this is what moved turn and flop exploitability off the
+// floor the unclassed tree sits on; the river, which has no runout, does not
+// move at all. See the table in TODO.md.
+export const DEFAULT_RUNOUT_CLASSES = 4
 
 export interface VectorCFROptions {
   stack: number
@@ -31,6 +42,9 @@ export interface VectorCFROptions {
   ranges: [Range, Range]
   config?: TreeConfig
   seed?: number
+  // How finely the runout is classed. 1 averages every card together; 4 is the
+  // default and splits pair / flush / overcard / brick. See runout-class.ts.
+  runoutClasses?: number
   // A prebuilt table for this board, if one is already in hand. Building a flop
   // table is ~0.8s.
   table?: ShowdownTable
@@ -120,6 +134,7 @@ export class VectorCFR {
   private readonly arena: Arena
   private readonly rng: Rng
   private readonly rootStreet: number
+  private readonly rootBoard: Card[]
   private readonly rootBoardLength: number
   private readonly runoutIndex: Map<string, number>
   private readonly deckAvailable: number[]
@@ -135,6 +150,10 @@ export class VectorCFR {
 
   // Per-iteration state, set before each traversal.
   private runoutCards: number[] = []
+  // The class each dealt card fell into, against the board as it stood when it
+  // was dealt. Fixed for the whole traversal, so it is computed once in
+  // setRunout rather than at every chance node.
+  private runoutClasses: number[] = []
   // Rank order for the runout currently loaded. Recomputing it inside every
   // showdown terminal was most of the solver's running time; it only changes
   // when the ranks do, which is once per iteration in setRunout.
@@ -147,10 +166,17 @@ export class VectorCFR {
 
   constructor(options: VectorCFROptions) {
     const config = options.config ?? DEFAULT_TREE_CONFIG
-    this.tree = buildPublicTree(options.stack, options.pot, options.board, config)
+    this.tree = buildPublicTree(
+      options.stack,
+      options.pot,
+      options.board,
+      config,
+      options.runoutClasses ?? DEFAULT_RUNOUT_CLASSES
+    )
     this.table = options.table ?? buildShowdownTable(options.board)
     this.rng = makeRng(options.seed ?? 1)
 
+    this.rootBoard = [...options.board]
     this.rootBoardLength = options.board.length
     this.rootStreet = options.board.length >= 5 ? 3 : options.board.length === 4 ? 2 : 1
 
@@ -253,7 +279,10 @@ export class VectorCFR {
       if (depth[n] > maxDepth) maxDepth = depth[n]
       const p = tree.player[n]
       if (p === CHANCE) {
-        depth[tree.chanceChild[n]] = depth[n] + 1
+        const start = tree.chanceStart[n]
+        for (let c = 0; c < tree.classCount; c++) {
+          depth[tree.chanceChildren[start + c]] = depth[n] + 1
+        }
         continue
       }
       if (p === TERMINAL) continue
@@ -278,6 +307,21 @@ export class VectorCFR {
     const column = this.runoutIndex.get(runoutKey(cards))
     if (column === undefined) throw new Error(`no showdown column for runout ${cards}`)
     this.runoutCards = cards
+
+    // Each card is classed against the board as it stood when it arrived, so a
+    // river that pairs the turn counts as a pairing card.
+    const classes: number[] = []
+    if (this.tree.classCount > 1) {
+      const board = [...this.rootBoard]
+      for (const n of cards) {
+        const card = numberToCard(n)
+        classes.push(runoutClass(card, board, this.tree.classCount))
+        board.push(card)
+      }
+    } else {
+      for (let i = 0; i < cards.length; i++) classes.push(0)
+    }
+    this.runoutClasses = classes
 
     const { ranks, handCount } = this.table
     const base = column * handCount
@@ -456,7 +500,13 @@ export class VectorCFR {
     this.kill(0, blocked0, next0)
     this.kill(1, blocked1, next1)
 
-    this.walk(this.tree.chanceChild[node], next0, next1, out0, out1)
+    this.walk(
+      chanceChildFor(this.tree, node, this.runoutClasses[dealt]),
+      next0,
+      next1,
+      out0,
+      out1
+    )
 
     // Everything dead by this point, not just what this card killed - the
     // child may be a terminal, which knows nothing about any of it.
@@ -652,7 +702,12 @@ export class VectorCFR {
       this.kill(hero, this.hands[hero].byCard[card], out)
       this.kill(opponent, this.hands[opponent].byCard[card], nextOpp)
 
-      this.bestResponseWalk(tree.chanceChild[node], hero, nextOpp, out)
+      this.bestResponseWalk(
+        chanceChildFor(tree, node, this.runoutClasses[dealt]),
+        hero,
+        nextOpp,
+        out
+      )
 
       for (const h of this.deadList[hero]) out[h] = 0
       for (let h = 0; h < nHero; h++) out[h] *= scale
@@ -807,11 +862,17 @@ export class VectorCFR {
   // --- reading the result ---
 
   // The node reached by taking these actions from the root, walking through any
-  // chance node on the way.
-  nodeFor(line: string[]): number {
+  // chance node on the way. `classes` gives the runout class to take at each
+  // chance node crossed, in order; anything unspecified takes class 0. A river
+  // line crosses no chance nodes, so it never needs them.
+  nodeFor(line: string[], classes: number[] = []): number {
     let node = 0
+    let crossed = 0
     for (const action of line) {
-      while (this.tree.player[node] === CHANCE) node = this.tree.chanceChild[node]
+      while (this.tree.player[node] === CHANCE) {
+        node = chanceChildFor(this.tree, node, classes[crossed] ?? 0)
+        crossed++
+      }
       if (this.tree.player[node] === TERMINAL) {
         throw new Error(`[${line}] runs past a terminal`)
       }
@@ -930,6 +991,10 @@ export class VectorCFR {
 
   get slotCount(): number {
     return this.regret.length
+  }
+
+  get classCount(): number {
+    return this.tree.classCount
   }
 
   // Info sets, in the sense the sampled solver counts them: one per decision

@@ -9,7 +9,8 @@ import {
   applyAction,
   advanceStreet,
 } from '../game-tree'
-import { CHANCE, TERMINAL } from '../public-tree'
+import { chanceChildFor, CHANCE, TERMINAL } from '../public-tree'
+import { runoutClass } from '../runout-class'
 import { VectorCFR } from '../vector-cfr'
 
 // The vectorized solver computes a whole range's counterfactual values in one
@@ -63,7 +64,7 @@ function naiveValue(
     for (const card of available) {
       total += naiveValue(
         advanceStreet(node, card),
-        tree.chanceChild[publicNode],
+        chanceChildFor(tree, publicNode, runoutClass(card, node.board, tree.classCount)),
         solver,
         hands,
         handIndex,
