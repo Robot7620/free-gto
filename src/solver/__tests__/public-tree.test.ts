@@ -8,7 +8,15 @@ import {
   TreeConfig,
   DEFAULT_TREE_CONFIG,
 } from '../game-tree'
-import { buildPublicTree, treeBytes, CHANCE, TERMINAL, PublicTree } from '../public-tree'
+import {
+  buildPublicTree,
+  chanceChildFor,
+  treeBytes,
+  CHANCE,
+  TERMINAL,
+  PublicTree,
+} from '../public-tree'
+import { runoutClass } from '../runout-class'
 
 const BOARD = ['Ks', '9h', '4c'].map(stringToCard)
 
@@ -25,6 +33,11 @@ const DENSE: TreeConfig = {
 // at every node. The runout cards used here are deliberately NOT the
 // placeholders the builder uses - the flat tree claims the betting structure
 // doesn't depend on which card was dealt, and this is what checks that claim.
+//
+// With runout classes the claim is narrower and worth restating: the structure
+// still doesn't depend on the card, but which *copy* of that structure you land
+// in does. The walk routes through the class the real card falls into, so a
+// mis-wired class pool shows up as a structural mismatch here.
 function compare(
   tree: PublicTree,
   stack: number,
@@ -32,11 +45,13 @@ function compare(
   board: Card[],
   config: TreeConfig,
   runouts: Card[]
-): { nodes: number; maxDepth: number } {
+): { nodes: number; maxDepth: number; visited: Set<number> } {
   let nodes = 0
   let maxDepth = 0
+  const visited = new Set<number>()
 
   const walk = (node: GameNode, index: number, streetsDealt: number, depth: number) => {
+    visited.add(index)
     nodes++
     maxDepth = Math.max(maxDepth, depth)
 
@@ -66,7 +81,8 @@ function compare(
     if (node.isChance) {
       expect(tree.player[index], `chance at ${where}`).toBe(CHANCE)
       const card = runouts[streetsDealt % runouts.length]
-      walk(advanceStreet(node, card), tree.chanceChild[index], streetsDealt + 1, depth + 1)
+      const cls = runoutClass(card, node.board, tree.classCount)
+      walk(advanceStreet(node, card), chanceChildFor(tree, index, cls), streetsDealt + 1, depth + 1)
       return
     }
 
@@ -83,7 +99,7 @@ function compare(
   }
 
   walk(createInitialNode(stack, pot, board, config), 0, 0, 0)
-  return { nodes, maxDepth }
+  return { nodes, maxDepth, visited }
 }
 
 describe('public tree', () => {
@@ -120,17 +136,72 @@ describe('public tree', () => {
   })
 
   it('every child index points somewhere real', () => {
-    const tree = buildPublicTree(100, 10, BOARD)
-    for (let i = 0; i < tree.children.length; i++) {
-      expect(tree.children[i]).toBeGreaterThanOrEqual(0)
-      expect(tree.children[i]).toBeLessThan(tree.nodeCount)
-    }
-    for (let i = 0; i < tree.nodeCount; i++) {
-      if (tree.player[i] === CHANCE) {
-        expect(tree.chanceChild[i]).toBeGreaterThanOrEqual(0)
-        expect(tree.chanceChild[i]).toBeLessThan(tree.nodeCount)
+    for (const k of [1, 4, 8]) {
+      const tree = buildPublicTree(100, 10, BOARD, DEFAULT_TREE_CONFIG, k)
+      for (let i = 0; i < tree.children.length; i++) {
+        expect(tree.children[i]).toBeGreaterThanOrEqual(0)
+        expect(tree.children[i]).toBeLessThan(tree.nodeCount)
       }
+      let chanceNodes = 0
+      for (let i = 0; i < tree.nodeCount; i++) {
+        if (tree.player[i] !== CHANCE) {
+          expect(tree.chanceStart[i], `node ${i} is not a chance node`).toBe(-1)
+          continue
+        }
+        chanceNodes++
+        const seen = new Set<number>()
+        for (let c = 0; c < k; c++) {
+          const child = chanceChildFor(tree, i, c)
+          expect(child).toBeGreaterThanOrEqual(0)
+          expect(child).toBeLessThan(tree.nodeCount)
+          seen.add(child)
+        }
+        // Classes must not share a subtree, or they share regrets and the
+        // whole exercise is a no-op.
+        expect(seen.size, `chance node ${i} at K=${k}`).toBe(k)
+      }
+      expect(chanceNodes).toBeGreaterThan(0)
+      expect(tree.chanceChildren.length).toBe(chanceNodes * k)
     }
+  })
+
+  it('gives each runout class its own copy, and one deal still sees one copy', () => {
+    const unclassed = buildPublicTree(100, 10, BOARD, DEFAULT_TREE_CONFIG, 1)
+    const runouts = ['Qd', '7h', 'Ad'].map(stringToCard)
+
+    for (const k of [4, 8]) {
+      const tree = buildPublicTree(100, 10, BOARD, DEFAULT_TREE_CONFIG, k)
+      // A flop has two chance levels, so the turn is copied K times and the
+      // river K*K - but the flop's own betting is shared, so growth lands
+      // under K^2 rather than on it.
+      expect(tree.nodeCount).toBeGreaterThan(unclassed.nodeCount)
+      expect(tree.nodeCount).toBeLessThan(unclassed.nodeCount * k * k)
+
+      // A single deal traverses exactly the structure the unclassed tree had.
+      // That is the invariant that keeps per-iteration cost flat in K.
+      const { nodes } = compare(tree, 100, 10, BOARD, DEFAULT_TREE_CONFIG, runouts)
+      expect(nodes, `one runout through K=${k}`).toBe(unclassed.nodeCount)
+    }
+  })
+
+  it('sends two turn classes down subtrees that share nothing below the flop', () => {
+    // This is the property the whole exercise rests on. If a pairing turn and
+    // an overcard turn shared any node below the chance point they would share
+    // regrets there, and classing the runout would buy nothing.
+    const tree = buildPublicTree(100, 10, BOARD, DEFAULT_TREE_CONFIG, 4)
+    const pairing = compare(tree, 100, 10, BOARD, DEFAULT_TREE_CONFIG, ['Kd', '5d'].map(stringToCard))
+    const overcard = compare(tree, 100, 10, BOARD, DEFAULT_TREE_CONFIG, ['Ad', '5d'].map(stringToCard))
+
+    expect(runoutClass(stringToCard('Kd'), BOARD, 4)).toBe(0)
+    expect(runoutClass(stringToCard('Ad'), BOARD, 4)).toBe(2)
+
+    const shared = [...pairing.visited].filter(n => overcard.visited.has(n))
+    // Everything they share is flop betting; nothing they share is past the
+    // card that told them apart.
+    for (const n of shared) expect(tree.street[n], `shared node ${n}`).toBe(1)
+    // And they do share the flop, rather than being two disconnected walks.
+    expect(shared.length).toBeGreaterThan(0)
+    expect(shared.length).toBe([...pairing.visited].filter(n => tree.street[n] === 1).length)
   })
 
   it('is small enough to keep around', () => {

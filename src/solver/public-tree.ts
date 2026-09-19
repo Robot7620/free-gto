@@ -16,9 +16,16 @@ import {
 //
 // The structure is also independent of *which* runout card is dealt: pot,
 // stacks and the legal actions after a turn card are the same whatever that
-// card was. Only hand evaluation cares about the card's identity. So a chance
-// node has exactly one structural successor here, and the dealt card is
-// tracked alongside the node index at solve time rather than baked into it.
+// card was. Only hand evaluation cares about the card's identity.
+//
+// That independence is why a chance node can have a handful of successors
+// rather than 47. It does not follow that one successor is enough: the *betting
+// structure* below a turn card is the same whatever fell, but the strategy that
+// should be played there is not, and with a single successor the solver has
+// nowhere to record the difference. So a chance node gets one structurally
+// identical copy of the rest of the tree per runout class (see
+// runout-class.ts), and the solver routes the card it dealt to its class.
+// classCount = 1 is the old single-successor tree exactly.
 
 export const CHANCE = -1
 export const TERMINAL = -2
@@ -37,8 +44,12 @@ export interface PublicTree {
   // Slice of `actions` / `children` belonging to this node.
   actionStart: Int32Array
   actionCount: Int32Array
-  // For a chance node, the node the next street opens at.
-  chanceChild: Int32Array
+  // How many runout classes a chance node branches on. 1 is the unclassed tree.
+  classCount: number
+  // For a chance node, where its slice of `chanceChildren` starts; -1 otherwise.
+  chanceStart: Int32Array
+  // Flat pool of `classCount` successors per chance node, indexed by class.
+  chanceChildren: Int32Array
   // Flat pools, indexed by actionStart + i.
   actions: string[]
   children: Int32Array
@@ -53,8 +64,12 @@ export function buildPublicTree(
   stack: number,
   pot: number,
   board: Card[],
-  config: TreeConfig = DEFAULT_TREE_CONFIG
+  config: TreeConfig = DEFAULT_TREE_CONFIG,
+  classCount = 1
 ): PublicTree {
+  if (!Number.isInteger(classCount) || classCount < 1) {
+    throw new Error(`classCount must be a positive integer, got ${classCount}`)
+  }
   const player: number[] = []
   const street: number[] = []
   const potArr: number[] = []
@@ -62,7 +77,8 @@ export function buildPublicTree(
   const folder: number[] = []
   const actionStart: number[] = []
   const actionCount: number[] = []
-  const chanceChild: number[] = []
+  const chanceStart: number[] = []
+  const chanceChildren: number[] = []
   const actions: string[] = []
   const children: number[] = []
 
@@ -78,7 +94,7 @@ export function buildPublicTree(
     atRisk.push(Math.min(node.contributed[0], node.contributed[1]))
     actionStart.push(actions.length)
     actionCount.push(0)
-    chanceChild.push(-1)
+    chanceStart.push(-1)
 
     // A fold's payoff is settled from the contributions, not the hands, so the
     // only thing the solver needs later is who folded.
@@ -97,9 +113,17 @@ export function buildPublicTree(
     if (node.isTerminal) return index
 
     if (node.isChance) {
-      // Placeholder card: only the street advance matters here.
+      // Placeholder card: only the street advance matters here. Every class
+      // gets the same structure - what differs between them is the strategy
+      // the solver will store against it, not the betting.
       const card = PLACEHOLDER_RUNOUTS[Math.min(depth, PLACEHOLDER_RUNOUTS.length - 1)]
-      chanceChild[index] = walk(advanceStreet(node, card), depth + 1)
+      // Reserve the slice before recursing, as with actions below.
+      const start = chanceChildren.length
+      for (let c = 0; c < classCount; c++) chanceChildren.push(-1)
+      chanceStart[index] = start
+      for (let c = 0; c < classCount; c++) {
+        chanceChildren[start + c] = walk(advanceStreet(node, card), depth + 1)
+      }
       return index
     }
 
@@ -131,7 +155,9 @@ export function buildPublicTree(
     folder: Int8Array.from(folder),
     actionStart: Int32Array.from(actionStart),
     actionCount: Int32Array.from(actionCount),
-    chanceChild: Int32Array.from(chanceChild),
+    classCount,
+    chanceStart: Int32Array.from(chanceStart),
+    chanceChildren: Int32Array.from(chanceChildren),
     actions,
     children: Int32Array.from(children),
     config,
@@ -139,6 +165,16 @@ export function buildPublicTree(
 }
 
 // Rough in-memory size, for sizing decisions.
+// The successor a chance node takes for a given runout class.
+export function chanceChildFor(tree: PublicTree, node: number, cls: number): number {
+  const start = tree.chanceStart[node]
+  if (start < 0) throw new Error(`node ${node} is not a chance node`)
+  if (cls < 0 || cls >= tree.classCount) {
+    throw new Error(`runout class ${cls} is outside 0..${tree.classCount - 1}`)
+  }
+  return tree.chanceChildren[start + cls]
+}
+
 export function treeBytes(tree: PublicTree): number {
   return (
     tree.player.byteLength +
@@ -148,7 +184,8 @@ export function treeBytes(tree: PublicTree): number {
     tree.folder.byteLength +
     tree.actionStart.byteLength +
     tree.actionCount.byteLength +
-    tree.chanceChild.byteLength +
+    tree.chanceStart.byteLength +
+    tree.chanceChildren.byteLength +
     tree.children.byteLength
   )
 }
