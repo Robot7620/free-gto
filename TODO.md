@@ -88,6 +88,37 @@ so the two can be compared. Removing it is a separate step.
 
 Then phases 5–6: Nash distance, and the Web Worker + UI.
 
+### What K=1 actually costs: measured, and it is a lot
+
+Phase 5's exploitability number was pointed at each street. The river converges;
+the turn and flop hit a floor and stay there.
+
+| iterations | river | turn | flop |
+|---|---|---|---|
+| ~2-4k   | 0.68% | 21.29% | 57.44% |
+| ~8-20k  | 0.22% | 20.68% | 54.04% |
+| 20-60k  | **0.10%** | **20.50%** | **56.01%** |
+
+Fifteen times the compute buys the turn 0.8 points and the flop nothing - the
+flop figure bounces inside its own sampling noise. This is not under-training.
+
+The floor is the abstraction, and its shape says so: the turn is blind to one
+card and costs ~20%, the flop is blind to two and costs ~55%. It compounds per
+blind street. The river has no runout to be blind to, which is exactly why it
+converges to a real number.
+
+Nor is the best response cheating. It sees which card fell, but so does any
+opponent - the board is public. A strategy that cannot tell a flush-completing
+turn from a brick calls the same facing a bet on either, and someone betting
+only the scary card collects the difference.
+
+**What follows from this.** River solves are trustworthy at 0.10%. Turn solves
+are marginal. Flop solves - the main thing anyone would want - are about half a
+pot exploitable and no amount of iterations will fix them. Texture classes
+therefore are not a nice-to-have after the UI; they are what makes a flop solve
+worth displaying. And they can now be judged, because exploitability will say
+whether K=4 or K=8 actually buys anything.
+
 ### The runout abstraction is still K=1, and that is the live limitation
 
 Regrets are keyed on `(public tree node, holding)`. The public tree node records
