@@ -1,6 +1,6 @@
 # TODO
 
-## Current state (2026-09-18)
+## Current state (2026-09-19)
 
 Working through a plan to fix flop convergence by switching to **vectorized
 exact-hand CFR** — the architecture real solvers use: abstract the betting tree,
@@ -50,12 +50,73 @@ they're infrastructure for the vectorized core.
   call) out of the hot loop and replaces the unbounded string-keyed `bucketCache`,
   which was the thing that would have killed any long run.
 
-**Phase 4 is next**: the vectorized core in a new `vector-cfr.ts`, consuming both
-of the above. Per-hand regret matching from pooled `Float32Array`s, O(n) fold and
-showdown terminals using the sorted prefix-sum trick with a per-card blocking
-correction, runout sampling at chance nodes. Then delete the bucketed sampler.
+**Phase 4 done**: `vector-cfr.ts` is the core, consuming both of the above. It
+traverses the public tree once per iteration carrying per-hand reach
+probabilities and counterfactual values, so **every holding is updated exactly
+on every iteration** — "median visits" stops being a meaningful number, because
+it is now the iteration count for every info set in the tree.
+
+Measured on Ks9h4c, 100bb/10bb, seed 12345:
+
+| street | nodes | info sets (node × holding) | solver arrays | build | per iteration |
+|---|---|---|---|---|---|
+| flop  | 3,957 | 160,425 | 10.3 MiB | 0.78s | 18.1ms |
+| turn  |   986 |  39,072 |  1.7 MiB | 0.04s |  4.8ms |
+| river |   123 |   4,536 |  0.3 MiB | 0.00s |  0.6ms |
+
+Peak heap over a 200-iteration flop solve is **19.9 MiB for the whole node
+process**, which over-counts the solver's share; 5.3 MiB of the flop's 10.3 MiB
+is the showdown table. The old sampler needed ~890 MB to hold 1.17M bucketed
+info sets and still had them growing.
+
+Two things were harder than the plan implied, both now covered by tests:
+
+- **Card removal at chance nodes needs a scale factor.** The exact
+  counterfactual value sums over cards neither holding uses, weighted
+  `1/(n-4)`; what's cheap to sample is a card uniform over all `n` with the
+  holdings it blocks dropped. Those differ by `n/(n-4)`, and without it every
+  line that sees another street is undervalued against one ending in an
+  immediate fold — 9% on the flop, compounding again on the turn.
+- **Blocked holdings have to be dropped, not just muted.** Zeroing their reach
+  keeps them out of terminals but not out of their own regret updates, where
+  they'd be scored off a `CONFLICT` rank, i.e. as the worst hand possible. Note
+  that this is invisible in the strategy — an all-negative regret vector regret
+  matches back to uniform — so it has to be tested on the regrets.
+
+The old bucketed sampler in `cfr.ts` / `infoset.ts` is deliberately still here,
+so the two can be compared. Removing it is a separate step.
 
 Then phases 5–6: Nash distance, and the Web Worker + UI.
+
+### The runout abstraction is still K=1, and that is the live limitation
+
+Regrets are keyed on `(public tree node, holding)`. The public tree node records
+the street but **not which card fell** — that's what makes a chance node have a
+single structural successor and the whole tree 3,957 nodes. So turn and river
+strategies are averaged across every runout: the solver cannot play a turned
+flush card differently from a turned brick.
+
+Sizing, for whoever picks this up. K=1 is measured here; the rest are the
+plan's estimates and have not been checked against a build:
+
+| runout classes | flop pools |
+|---|---|
+| K=1 (today, 3,957 nodes) | 10 MiB, measured |
+| K=4 | ~45 MB, estimated |
+| K=8 | ~175 MB, estimated |
+| exact (K=47, ~3.1M nodes) | ~5.9 GB, estimated |
+
+Exact runouts are the honest reason a perfect-recall flop solve is not a browser
+computation. Texture classes at K=4–8 are affordable and are the natural next
+piece of work — but **sequence them after phase 5**, because exploitability is
+what measures whether the extra classes bought anything.
+
+Two consequences worth holding on to:
+
+- **A river solve has no runouts left, so it is exact** within the betting
+  abstraction. That is why it is the correctness gate for everything here.
+- **Any exploitability number computed today is exploitability *within* the
+  abstraction**, not the true Nash distance. It has to be reported that way.
 
 ### Why cutting bet sizings is not a compromise
 
@@ -243,7 +304,12 @@ left is the finer-grained range work:
   against, but the solver still treats it as one betting round.
 - Betting is capped at 3 bets/raises per street (`MAX_AGGRESSIVE_ACTIONS`)
 - Chance-sampled CFR, so results move slightly run to run; more iterations
-  tighten them
+  tighten them. `vector-cfr.ts` is seeded, so a given seed does reproduce
+  exactly
+- **Runouts are abstracted at K=1** in `vector-cfr.ts`: turn and river
+  strategies are averaged over which card fell, because the public tree node
+  doesn't record it. See "The runout abstraction is still K=1" above — this is
+  the largest remaining source of error and it is deliberate, not an oversight
 - Only the BTN (in position) strategy is displayed; the BB strategy is solved but
   never surfaced
 
