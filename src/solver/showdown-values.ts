@@ -99,12 +99,17 @@ function sortedByRank(set: HandSet): Int32Array {
 // blocking is then removed by tracking the same sums per card and subtracting
 // the two cards hero holds.
 //
-// A villain hand using BOTH of hero's cards gets subtracted by each per-card
-// term and has to be added back once. In a real deal that hand is hero's exact
-// holding, which ties hero and so contributes nothing either way - but relying
-// on that means relying on rank being a pure function of the cards, which is an
-// assumption the caller shouldn't have to know about. The term is cheap, so it
-// is applied properly instead.
+// No inclusion-exclusion term is needed here, and the reason is worth stating.
+// A villain hand using BOTH of hero's cards is the same two cards scored on the
+// same board, so it necessarily has hero's exact rank. It lands in the tie
+// group, contributes nothing to `won` or `lost`, and there is therefore nothing
+// for the two per-card subtractions to double-count. The fold path below is
+// different: its value doesn't depend on rank, so that hand carries real weight
+// there and genuinely has to be added back.
+//
+// PRECONDITION: rank is a function of the cards - the same holding scored on
+// the same board gets the same rank in both sets. That holds by construction,
+// since both look the value up from the same showdown table.
 export function showdownValues(
   hero: HandSet,
   villain: HandSet,
@@ -114,12 +119,6 @@ export function showdownValues(
 ): void {
   const heroOrder = sortedByRank(hero)
   const villainOrder = sortedByRank(villain)
-
-  // Villain hands keyed by their exact card pair, for the add-back term.
-  const pairIndex = new Map<number, number>()
-  for (let g = 0; g < villain.count; g++) {
-    pairIndex.set(pairKey(villain.cardA[g], villain.cardB[g]), g)
-  }
 
   const totalCard = new Float64Array(DECK)
   const wonCard = new Float64Array(DECK)
@@ -171,20 +170,11 @@ export function showdownValues(
       const a = hero.cardA[h]
       const b = hero.cardB[h]
 
-      let wonVisible = won - wonCard[a] - wonCard[b]
-      let lostVisible =
+      const wonVisible = won - wonCard[a] - wonCard[b]
+      const lostVisible =
         lost -
         (totalCard[a] - wonCard[a] - tieCard[a]) -
         (totalCard[b] - wonCard[b] - tieCard[b])
-
-      // Add back the hand that both per-card terms removed.
-      const both = pairIndex.get(pairKey(a, b))
-      if (both !== undefined) {
-        const r = villainReach[both]
-        const bothRank = villain.rank[both]
-        if (bothRank < rank) wonVisible += r
-        else if (bothRank > rank) lostVisible += r
-      }
 
       out[h] = atRisk * (wonVisible - lostVisible)
       i++

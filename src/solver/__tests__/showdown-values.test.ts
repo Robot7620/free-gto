@@ -17,6 +17,22 @@ import { makeRng } from '../rng'
 function randomCase(rng: () => number, maxHands: number, rankSpread: number) {
   const pick = (n: number) => Math.floor(rng() * n)
 
+  // Rank is a function of the cards, exactly as it is in the real solver where
+  // both sides read the same showdown table. Both ranges legitimately contain
+  // the same holding - they're enumerated independently - and when they do it
+  // must score identically. Drawing the two sides' ranks independently would
+  // manufacture a deal that cannot exist.
+  const rankOf = new Map<string, number>()
+  const rankFor = (a: number, b: number): number => {
+    const key = `${Math.min(a, b)}-${Math.max(a, b)}`
+    let r = rankOf.get(key)
+    if (r === undefined) {
+      r = pick(rankSpread)
+      rankOf.set(key, r)
+    }
+    return r
+  }
+
   const makeSide = (): { set: HandSet; reach: Float64Array } => {
     const count = 1 + pick(maxHands)
     const hands: [number, number][] = []
@@ -33,7 +49,7 @@ function randomCase(rng: () => number, maxHands: number, rankSpread: number) {
       hands.push([a, b])
       // A small rank spread forces plenty of ties, which is where the sweep
       // is most likely to go wrong.
-      ranks.push(pick(rankSpread))
+      ranks.push(rankFor(a, b))
     }
 
     const reach = new Float64Array(hands.length)
@@ -100,6 +116,25 @@ describe('showdown values', () => {
     const fast = new Float64Array(1)
     showdownValues(hero, villain, reach, 10, fast)
     expect(fast[0]).toBe(0)
+  })
+
+  it('both ranges holding the same cards cancels without a correction term', () => {
+    // Both sides enumerate their range independently, so the same holding
+    // appears in both. It can never be dealt to both players, and because the
+    // same cards on the same board score identically it ties itself - which is
+    // what lets the per-card subtractions cancel with no add-back.
+    const hero = makeHandSet([[3, 9], [20, 21]], [5, 8])
+    const villain = makeHandSet([[3, 9], [30, 31]], [5, 2])
+    const reach = Float64Array.from([0.4, 0.6])
+
+    const fast = new Float64Array(hero.count)
+    const slow = new Float64Array(hero.count)
+    showdownValues(hero, villain, reach, 10, fast)
+    showdownValuesNaive(hero, villain, reach, 10, slow)
+
+    for (let i = 0; i < hero.count; i++) {
+      expect(fast[i]).toBeCloseTo(slow[i], 12)
+    }
   })
 
   it('folds: matches the naive reference, including the double-counted holding', () => {
