@@ -141,6 +141,12 @@ export class VectorCFR {
 
   private readonly rootOut: [Float64Array, Float64Array]
 
+  // Set while a best response is enumerating runouts inside the walk rather
+  // than being handed one from outside. See `bestResponseWalk`.
+  private brEnumerate = false
+  private brPrefix: number[] = []
+  private brBoard: Card[] = []
+
   // Holdings a dealt runout card has knocked out, for the rest of this
   // traversal. Zero reach is not enough to identify them: a live holding can
   // have zero reach because the player's own strategy never takes this line,
@@ -686,9 +692,78 @@ export class VectorCFR {
 
     if (kind === CHANCE) {
       const dealt = tree.street[node] - this.rootStreet
-      const card = this.runoutCards[dealt]
       const available = 52 - this.rootBoardLength - dealt
       const scale = available / (available - 4)
+
+      // Averaging the runout INSIDE the walk is the whole difference between
+      // the two exploitability numbers this class reports.
+      //
+      // Fixing a runout at the root and averaging the results afterwards
+      // computes E[max], not max E: hero takes its maximum at every node,
+      // including the turn nodes ABOVE this one, with the river card already
+      // loaded. That hands the best response knowledge of a card that has not
+      // been dealt yet. A real opponent sees every card that is face up - which
+      // is what justifies hero choosing freely per class below here - but not
+      // one that is still in the deck.
+      //
+      // Enumerating here instead gives hero a single choice above the chance
+      // node, scored against the average over cards, and a free choice below it
+      // once the card is public. The cost is the same either way: the same
+      // subtrees get walked, just in a different order.
+      if (this.brEnumerate) {
+        const needed = 5 - this.rootBoardLength
+        const mark = this.arena.mark()
+        const nextOpp = this.arena.alloc(nOpp)
+        const childOut = this.arena.alloc(nHero)
+        const total = this.arena.alloc(nHero)
+        total.fill(0)
+
+        let cards = 0
+        for (const card of this.deckAvailable) {
+          if (this.brPrefix.indexOf(card) >= 0) continue
+          cards++
+
+          const cls =
+            tree.classCount > 1
+              ? runoutClass(numberToCard(card), this.brBoard, tree.classCount)
+              : 0
+
+          nextOpp.set(reachOpp)
+          childOut.fill(0)
+          const depthHero = this.deadList[hero].length
+          const depthOpp = this.deadList[opponent].length
+          this.kill(hero, this.hands[hero].byCard[card], childOut)
+          this.kill(opponent, this.hands[opponent].byCard[card], nextOpp)
+
+          this.brPrefix.push(card)
+          this.brBoard.push(numberToCard(card))
+          // Ranks are keyed on the finished five-card board, so they can only
+          // be loaded once the last card is down. Everything terminal above
+          // that point is a fold, which settles from contributions alone.
+          if (this.brPrefix.length === needed) this.setRunout([...this.brPrefix])
+
+          this.bestResponseWalk(chanceChildFor(tree, node, cls), hero, nextOpp, childOut)
+
+          for (const h of this.deadList[hero]) childOut[h] = 0
+          for (let h = 0; h < nHero; h++) total[h] += childOut[h]
+
+          this.brBoard.pop()
+          this.brPrefix.pop()
+          this.revive(hero, depthHero)
+          this.revive(opponent, depthOpp)
+        }
+
+        // Same correction as the sampled form, for the same reason: what is
+        // being averaged is a card uniform over all of them with the holdings
+        // it blocks dropped, and the exact value sums over the n-4 cards
+        // neither holding uses.
+        for (let h = 0; h < nHero; h++) out[h] = (total[h] / cards) * scale
+
+        this.arena.release(mark)
+        return
+      }
+
+      const card = this.runoutCards[dealt]
 
       const mark = this.arena.mark()
       const nextOpp = this.arena.alloc(nOpp)
@@ -763,6 +838,24 @@ export class VectorCFR {
     this.arena.release(mark)
   }
 
+  // Total value to `hero` of best-responding across every runout at once,
+  // choosing at each node knowing only the cards that are face up there.
+  private bestResponseEnumerated(hero: number): number {
+    this.brEnumerate = true
+    this.brPrefix = []
+    this.brBoard = [...this.rootBoard]
+    // A river has nothing to enumerate; its ranks were loaded in the
+    // constructor and the walk never reaches a chance node.
+    if (this.rootBoardLength === 5) this.setRunout([])
+    const out = new Float64Array(this.hands[hero].count)
+    try {
+      this.bestResponseWalk(0, hero, this.hands[1 - hero].weight, out)
+    } finally {
+      this.brEnumerate = false
+    }
+    return this.dot(hero, out)
+  }
+
   // Total value to `hero` of best-responding, over one runout, reach-weighted
   // across hero's range.
   private bestResponseForRunout(hero: number, runout: number[]): number {
@@ -822,13 +915,48 @@ export class VectorCFR {
   // zero; the amount by which they exceed zero is the exploitability, reported
   // per deal and as a share of the starting pot.
   //
+  // The best response here knows every card that is face up when it acts and
+  // nothing about the cards still in the deck, which is what an opponent
+  // actually has. `clairvoyantExploitability` is the same computation with
+  // that restriction removed, and the gap between them is wide enough that the
+  // two must not be confused - see its comment.
+  //
   // What this number covers: hands are exact, so the hand dimension is
-  // perfect-recall and a best response here is a real one. Runouts are not -
-  // the tree is K=1, so both the strategy and its best response are confined
-  // to an abstraction that cannot tell one turn card from another. This is
-  // therefore exploitability WITHIN the abstraction, and a real-game number
+  // perfect-recall and a best response here is a real one. Runouts are
+  // abstracted into texture classes, so the strategy being measured cannot
+  // tell two cards in the same class apart, while the best response can. This
+  // is therefore exploitability WITHIN the abstraction, and a real-game number
   // would be worse. Do not quote it as a Nash distance.
-  exploitability(options: { maxRunouts?: number } = {}): {
+  exploitability(): {
+    br: [number, number]
+    perDeal: number
+    percentOfPot: number
+  } {
+    const br: [number, number] = [
+      this.bestResponseEnumerated(0),
+      this.bestResponseEnumerated(1),
+    ]
+    const z = this.validDealWeight()
+    br[0] /= z
+    br[1] /= z
+    const perDeal = br[0] + br[1]
+    return { br, perDeal, percentOfPot: (perDeal / this.tree.pot[0]) * 100 }
+  }
+
+  // The same number with the best response allowed to see the whole runout
+  // before it acts.
+  //
+  // This is what phase 5 measured, and the 20.5% turn / 56% flop figures in
+  // TODO.md are this. It fixes a runout, walks from the root taking hero's
+  // maximum at every node with that runout already loaded, and averages the
+  // results - so hero's turn decision is made knowing the river card. It is
+  // therefore an upper bound on exploitability rather than exploitability, and
+  // the part of it that comes from clairvoyance is a floor no strategy can
+  // lower, however finely the runout is classed.
+  //
+  // On a river the two agree exactly, there being no undealt card to be
+  // clairvoyant about. That is what pins them against each other.
+  clairvoyantExploitability(options: { maxRunouts?: number } = {}): {
     br: [number, number]
     perDeal: number
     percentOfPot: number

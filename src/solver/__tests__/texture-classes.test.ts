@@ -80,7 +80,6 @@ describe('a river solve does not notice runout classes', () => {
     const base = solve(RIVER, 1, ITERATIONS).exploitability()
     for (const k of [4, 8]) {
       const other = solve(RIVER, k, ITERATIONS).exploitability()
-      expect(other.exact).toBe(true)
       expect(other.percentOfPot, `K=${k}`).toBe(base.percentOfPot)
     }
   })
