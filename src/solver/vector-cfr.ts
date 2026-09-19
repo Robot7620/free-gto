@@ -126,6 +126,13 @@ export class VectorCFR {
 
   private readonly rootOut: [Float64Array, Float64Array]
 
+  // Holdings a dealt runout card has knocked out, for the rest of this
+  // traversal. Zero reach is not enough to identify them: a live holding can
+  // have zero reach because the player's own strategy never takes this line,
+  // and CFR has to keep updating its regrets. See `chance`.
+  private readonly dead: [Uint8Array, Uint8Array]
+  private readonly deadList: [number[], number[]] = [[], []]
+
   // Per-iteration state, set before each traversal.
   private runoutCards: number[] = []
   private updating = true
@@ -179,6 +186,10 @@ export class VectorCFR {
     this.rootOut = [
       new Float64Array(this.hands[0].count),
       new Float64Array(this.hands[1].count),
+    ]
+    this.dead = [
+      new Uint8Array(this.hands[0].count),
+      new Uint8Array(this.hands[1].count),
     ]
 
     this.arena = new Arena(this.scratchBound())
@@ -295,27 +306,29 @@ export class VectorCFR {
   }
 
   run(iterations: number): void {
-    for (let i = 0; i < iterations; i++) {
-      this.iterationsRun++
-      const t = this.iterationsRun
-      // Linear CFR. Weighting iteration t's regret by t is equivalent to
-      // discounting everything already accumulated by t/(t+1) and adding the
-      // new regret unweighted, up to an overall positive factor that regret
-      // matching is blind to. The discounted form is what keeps the running
-      // sum inside Float32's precision, and it costs nothing here because the
-      // vectorized traversal visits every decision node on every iteration.
-      this.discount = t / (t + 1)
-      this.strategyWeight = t
-      this.updating = true
-      this.setRunout(this.sampleRunout())
-      this.walk(
-        0,
-        this.hands[0].weight,
-        this.hands[1].weight,
-        this.rootOut[0],
-        this.rootOut[1]
-      )
-    }
+    for (let i = 0; i < iterations; i++) this.iterate(this.sampleRunout())
+  }
+
+  // One learning iteration on a runout of the caller's choosing, in the order
+  // the cards are dealt. `run` is this with the runout sampled.
+  runWithRunout(runout: Card[]): void {
+    this.iterate(runout.map(cardToNumber))
+  }
+
+  private iterate(runout: number[]): void {
+    this.iterationsRun++
+    const t = this.iterationsRun
+    // Linear CFR. Weighting iteration t's regret by t is equivalent to
+    // discounting everything already accumulated by t/(t+1) and adding the new
+    // regret unweighted, up to an overall positive factor that regret matching
+    // is blind to. The discounted form is what keeps the running sum inside
+    // Float32's precision, and it costs nothing here because the vectorized
+    // traversal visits every decision node on every iteration.
+    this.discount = t / (t + 1)
+    this.strategyWeight = t
+    this.updating = true
+    this.setRunout(runout)
+    this.walk(0, this.hands[0].weight, this.hands[1].weight, this.rootOut[0], this.rootOut[1])
   }
 
   // One traversal with a given runout and no learning, returning each player's
@@ -394,6 +407,14 @@ export class VectorCFR {
   // It is not a cosmetic constant. Leave it out and every line that sees
   // another street is undervalued against one that ends in an immediate fold -
   // 9% on the flop, compounding with 9% again on the turn.
+  //
+  // The holdings the card blocks are marked dead as well as zeroed. Zeroing
+  // their reach stops them reaching terminals, but it does not stop the
+  // traversal computing a value for them on the way back and folding it into
+  // their regrets at every decision node below here - and that value would be
+  // scored off a CONFLICT rank, i.e. as though the holding were the worst hand
+  // possible. A deal that cannot happen must leave no trace, not a pessimistic
+  // one.
   private chance(
     node: number,
     reach0: Float64Array,
@@ -417,21 +438,44 @@ export class VectorCFR {
     const next1 = this.arena.alloc(n1)
     next0.set(reach0)
     next1.set(reach1)
-    for (let i = 0; i < blocked0.length; i++) next0[blocked0[i]] = 0
-    for (let i = 0; i < blocked1.length; i++) next1[blocked1[i]] = 0
+
+    const depth0 = this.deadList[0].length
+    const depth1 = this.deadList[1].length
+    this.kill(0, blocked0, next0)
+    this.kill(1, blocked1, next1)
 
     this.walk(this.tree.chanceChild[node], next0, next1, out0, out1)
 
-    // A blocked holding cannot be here at all, so whatever the subtree scored
-    // it against is meaningless. Zero it, so upstream it contributes no regret
-    // on this iteration rather than a fabricated one.
-    for (let i = 0; i < blocked0.length; i++) out0[blocked0[i]] = 0
-    for (let i = 0; i < blocked1.length; i++) out1[blocked1[i]] = 0
+    // Everything dead by this point, not just what this card killed - the
+    // child may be a terminal, which knows nothing about any of it.
+    for (const h of this.deadList[0]) out0[h] = 0
+    for (const g of this.deadList[1]) out1[g] = 0
 
     for (let h = 0; h < n0; h++) out0[h] *= scale
     for (let g = 0; g < n1; g++) out1[g] *= scale
 
+    this.revive(0, depth0)
+    this.revive(1, depth1)
     this.arena.release(mark)
+  }
+
+  private kill(player: number, hands: Int32Array, reach: Float64Array): void {
+    const dead = this.dead[player]
+    const list = this.deadList[player]
+    for (let i = 0; i < hands.length; i++) {
+      const h = hands[i]
+      reach[h] = 0
+      if (dead[h] === 0) {
+        dead[h] = 1
+        list.push(h)
+      }
+    }
+  }
+
+  private revive(player: number, depth: number): void {
+    const dead = this.dead[player]
+    const list = this.deadList[player]
+    while (list.length > depth) dead[list.pop() as number] = 0
   }
 
   private decision(
@@ -512,9 +556,21 @@ export class VectorCFR {
       outP[h] = value
     }
 
+    // A holding a runout card has already blocked is not in play here, so it
+    // reports nothing upstream and learns nothing from what it was scored
+    // against - see `chance`.
+    const dead = this.dead[player]
+    for (const h of this.deadList[player]) outP[h] = 0
+    for (const g of this.deadList[opponent]) outOpp[g] = 0
+
     if (this.updating) {
+      // Dead holdings skip the linear discount along with the update. That
+      // leaves their regrets weighted a little differently from a live
+      // holding's, but identically across their own actions, which is all
+      // regret matching reads.
       const discount = this.discount
       for (let h = 0; h < nHands; h++) {
+        if (dead[h] === 1) continue
         const o = h * actions
         const value = outP[h]
         for (let a = 0; a < actions; a++) {
@@ -550,6 +606,18 @@ export class VectorCFR {
   actionsAt(node: number): string[] {
     const start = this.tree.actionStart[node]
     return this.tree.actions.slice(start, start + this.tree.actionCount[node])
+  }
+
+  // The raw accumulated regrets for one holding. Regret matching throws away
+  // everything negative, so two very different regret vectors can produce the
+  // same strategy - which makes this the only way to see whether something has
+  // been written that should not have been.
+  regretsAt(node: number, hand: number): Float64Array {
+    const player = this.tree.player[node]
+    if (player === CHANCE || player === TERMINAL) throw new Error(`node ${node} does not act`)
+    const actions = this.tree.actionCount[node]
+    const base = this.slotStart[node] + hand * actions
+    return Float64Array.from(this.regret.subarray(base, base + actions))
   }
 
   // The regret-matched strategy one holding is playing right now. This is what
