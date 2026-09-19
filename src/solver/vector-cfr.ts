@@ -4,7 +4,7 @@ import { enumerateRangeCombos } from '../engine/combos'
 import { TreeConfig, DEFAULT_TREE_CONFIG } from './game-tree'
 import { PublicTree, buildPublicTree, CHANCE, TERMINAL } from './public-tree'
 import { ShowdownTable, buildShowdownTable } from './showdown-table'
-import { HandSet, makeHandSet, showdownValues, foldValues } from './showdown-values'
+import { HandSet, makeHandSet, showdownValues, foldValues, rankOrder } from './showdown-values'
 import { Rng, makeRng } from './rng'
 
 // Vectorized CFR over the public betting tree.
@@ -135,6 +135,10 @@ export class VectorCFR {
 
   // Per-iteration state, set before each traversal.
   private runoutCards: number[] = []
+  // Rank order for the runout currently loaded. Recomputing it inside every
+  // showdown terminal was most of the solver's running time; it only changes
+  // when the ranks do, which is once per iteration in setRunout.
+  private order: [Int32Array, Int32Array] = [new Int32Array(0), new Int32Array(0)]
   private updating = true
   private discount = 0.5
   private strategyWeight = 1
@@ -281,6 +285,7 @@ export class VectorCFR {
       const { count, tableIndex, set } = hands
       for (let h = 0; h < count; h++) set.rank[h] = ranks[base + tableIndex[h]]
     }
+    this.order = [rankOrder(this.hands[0].set), rankOrder(this.hands[1].set)]
   }
 
   // Deal the remaining board one card at a time, each uniform over what's left.
@@ -386,8 +391,9 @@ export class VectorCFR {
     const set1 = this.hands[1].set
 
     if (folder === -1) {
-      showdownValues(set0, set1, reach1, atRisk, out0)
-      showdownValues(set1, set0, reach0, atRisk, out1)
+      const [order0, order1] = this.order
+      showdownValues(set0, set1, reach1, atRisk, out0, order0, order1)
+      showdownValues(set1, set0, reach0, atRisk, out1, order1, order0)
       return
     }
 
@@ -709,5 +715,20 @@ export class VectorCFR {
 
   get slotCount(): number {
     return this.regret.length
+  }
+
+  // Info sets, in the sense the sampled solver counts them: one per decision
+  // the solver has to answer separately. Here that is (public tree node,
+  // holding) - every one of which is updated on every iteration, which is the
+  // whole point. The sampled solver's count is not comparable, since it keys
+  // on a strength bucket and only creates an info set when sampling reaches it.
+  get infoSetCount(): number {
+    let total = 0
+    for (let n = 0; n < this.tree.nodeCount; n++) {
+      const p = this.tree.player[n]
+      if (p === CHANCE || p === TERMINAL) continue
+      total += this.hands[p].count
+    }
+    return total
   }
 }

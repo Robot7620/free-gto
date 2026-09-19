@@ -6,6 +6,7 @@ import {
   showdownValuesNaive,
   foldValues,
   foldValuesNaive,
+  rankOrder,
 } from '../showdown-values'
 import { makeRng } from '../rng'
 
@@ -134,6 +135,35 @@ describe('showdown values', () => {
 
     for (let i = 0; i < hero.count; i++) {
       expect(fast[i]).toBeCloseTo(slow[i], 12)
+    }
+  })
+
+  it('gives the same answer whether the rank order is passed in or recomputed', () => {
+    // The solver hoists the sort out of the hot loop, since the order only
+    // changes when the ranks do. That is only sound if handing the order back
+    // in is indistinguishable from letting the sweep sort for itself.
+    const rng = makeRng(31337)
+
+    for (let trial = 0; trial < 200; trial++) {
+      const { hero, villain } = randomCase(rng, 24, 1 + (trial % 12))
+      const atRisk = 1 + rng() * 50
+
+      const sorted = new Float64Array(hero.set.count)
+      const supplied = new Float64Array(hero.set.count)
+      showdownValues(hero.set, villain.set, villain.reach, atRisk, sorted)
+      showdownValues(
+        hero.set,
+        villain.set,
+        villain.reach,
+        atRisk,
+        supplied,
+        rankOrder(hero.set),
+        rankOrder(villain.set)
+      )
+
+      for (let i = 0; i < hero.set.count; i++) {
+        expect(supplied[i], `trial ${trial} hand ${i}`).toBe(sorted[i])
+      }
     }
   })
 

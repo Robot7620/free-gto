@@ -86,7 +86,15 @@ export function foldValuesNaive(
   }
 }
 
-function sortedByRank(set: HandSet): Int32Array {
+// Hand indices in increasing rank order.
+//
+// Exported because the order depends only on the ranks, and the ranks change
+// once per runout while showdownValues is called at every showdown terminal in
+// the tree - a few thousand times per iteration on a flop. Sorting there was
+// most of the solver's running time. A caller that already holds the order can
+// pass it in, PROVIDED it was computed from the ranks currently in the set;
+// hand back a stale one and the sweep will quietly return wrong numbers.
+export function rankOrder(set: HandSet): Int32Array {
   const order = Array.from({ length: set.count }, (_, i) => i)
   order.sort((x, y) => set.rank[x] - set.rank[y])
   return Int32Array.from(order)
@@ -115,11 +123,10 @@ export function showdownValues(
   villain: HandSet,
   villainReach: Float64Array,
   atRisk: number,
-  out: Float64Array
+  out: Float64Array,
+  heroOrder: Int32Array = rankOrder(hero),
+  villainOrder: Int32Array = rankOrder(villain)
 ): void {
-  const heroOrder = sortedByRank(hero)
-  const villainOrder = sortedByRank(villain)
-
   const totalCard = new Float64Array(DECK)
   const wonCard = new Float64Array(DECK)
   const tieCard = new Float64Array(DECK)
