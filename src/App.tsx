@@ -6,7 +6,7 @@ import { BoardView } from './components/BoardView'
 import { CardPicker } from './components/CardPicker'
 import { StrategyTable, StrategyAction } from './components/StrategyTable'
 import { CFRSolver } from './solver/cfr'
-import { createInitialNode } from './solver/game-tree'
+import { createInitialNode, DEFAULT_TREE_CONFIG } from './solver/game-tree'
 
 const DEFAULT_BTN_RANGE = 'AA,KK,QQ,JJ,TT,99,88,77,66,55,AKs,AQs,AJs,ATs,KQs,KJs,AKo,AQo'
 const DEFAULT_BB_RANGE =
@@ -19,6 +19,13 @@ const DEFAULT_POT = 10
 // afford them: it settles at ~70k info sets instead of growing past 1.4M.
 // Measured on a flop, median visits per info set: 20k iters -> 2, 100k -> 4,
 // 300k -> 9 (the level at which a river solve produces sane output), at ~49s.
+// Read off the tree config rather than restated by hand: this line already
+// went stale once, advertising sizings the solver had stopped offering.
+const SIZING_LABEL = [
+  ...DEFAULT_TREE_CONFIG.betFractions.map(([, f]) => `${Math.round(f * 100)}% pot`),
+  'all-in',
+].join(', ')
+
 const ITERATIONS = 200000
 const UPDATE_INTERVAL = 5000
 
@@ -254,8 +261,11 @@ function App() {
               </p>
               <ul className="list-disc list-inside space-y-1">
                 <li>{ITERATIONS.toLocaleString()} iterations, chance-sampled over both ranges</li>
-                <li>Simplified bet sizing (33%, 50%, 75%, pot, all-in)</li>
-                <li>Single street solving, max 3 bets/raises</li>
+                <li>Bet sizing: {SIZING_LABEL}</li>
+                <li>
+                  Plays to showdown through the turn and river, at most{' '}
+                  {DEFAULT_TREE_CONFIG.maxAggressiveActions} bets or raises per street
+                </li>
               </ul>
             </div>
           </div>
