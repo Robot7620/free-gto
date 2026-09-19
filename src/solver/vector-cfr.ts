@@ -595,6 +595,215 @@ export class VectorCFR {
     this.arena.release(mark)
   }
 
+  // --- best response and exploitability ---
+
+  // Counterfactual value to `hero` of best-responding to the opponent's
+  // average strategy, per holding, for one runout.
+  //
+  // Same shape as the learning traversal with one change: at hero's own nodes
+  // we take the max over actions instead of mixing by a strategy. Each
+  // (node, holding) is its own information set here, so hero may pick
+  // independently for every holding - which is exactly what a perfect-recall
+  // best response is entitled to do.
+  private bestResponseWalk(
+    node: number,
+    hero: number,
+    reachOpp: Float64Array,
+    out: Float64Array
+  ): void {
+    const tree = this.tree
+    const kind = tree.player[node]
+    const opponent = 1 - hero
+    const nHero = this.hands[hero].count
+    const nOpp = this.hands[opponent].count
+
+    if (kind === TERMINAL) {
+      const atRisk = tree.atRisk[node]
+      const folder = tree.folder[node]
+      const setHero = this.hands[hero].set
+      const setOpp = this.hands[opponent].set
+      const [order0, order1] = this.order
+      const orderHero = hero === 0 ? order0 : order1
+      const orderOpp = hero === 0 ? order1 : order0
+
+      if (folder === -1) {
+        showdownValues(setHero, setOpp, reachOpp, atRisk, out, orderHero, orderOpp)
+      } else {
+        foldValues(setHero, setOpp, reachOpp, folder === hero ? -atRisk : atRisk, out)
+      }
+      return
+    }
+
+    if (kind === CHANCE) {
+      const dealt = tree.street[node] - this.rootStreet
+      const card = this.runoutCards[dealt]
+      const available = 52 - this.rootBoardLength - dealt
+      const scale = available / (available - 4)
+
+      const mark = this.arena.mark()
+      const nextOpp = this.arena.alloc(nOpp)
+      nextOpp.set(reachOpp)
+
+      const depthHero = this.deadList[hero].length
+      const depthOpp = this.deadList[opponent].length
+      // Hero's blocked holdings carry no reach here, but still have to be
+      // marked so their value is suppressed rather than scored off a
+      // CONFLICT rank - the same reason the learning pass kills them.
+      this.kill(hero, this.hands[hero].byCard[card], out)
+      this.kill(opponent, this.hands[opponent].byCard[card], nextOpp)
+
+      this.bestResponseWalk(tree.chanceChild[node], hero, nextOpp, out)
+
+      for (const h of this.deadList[hero]) out[h] = 0
+      for (let h = 0; h < nHero; h++) out[h] *= scale
+
+      this.revive(hero, depthHero)
+      this.revive(opponent, depthOpp)
+      this.arena.release(mark)
+      return
+    }
+
+    const actions = tree.actionCount[node]
+    const start = tree.actionStart[node]
+    const mark = this.arena.mark()
+    const childValues = this.arena.alloc(actions * nHero)
+
+    if (kind === hero) {
+      // Hero's node: every action sees the same opponent reach, because
+      // hero's own choice doesn't change what the opponent is holding.
+      for (let a = 0; a < actions; a++) {
+        const slice = childValues.subarray(a * nHero, (a + 1) * nHero)
+        this.bestResponseWalk(tree.children[start + a], hero, reachOpp, slice)
+      }
+      for (let h = 0; h < nHero; h++) {
+        let best = -Infinity
+        for (let a = 0; a < actions; a++) {
+          const v = childValues[a * nHero + h]
+          if (v > best) best = v
+        }
+        out[h] = best
+      }
+    } else {
+      // Opponent's node: follow their average strategy, scaling their reach
+      // per action, and sum - the branches are alternatives they mix between.
+      const base = this.slotStart[node]
+      const sums = this.strategySum
+      const scaled = this.arena.alloc(nOpp)
+
+      out.fill(0)
+      for (let a = 0; a < actions; a++) {
+        for (let g = 0; g < nOpp; g++) {
+          const o = g * actions
+          let total = 0
+          for (let b = 0; b < actions; b++) total += sums[base + o + b]
+          const p = total > 0 ? sums[base + o + a] / total : 1 / actions
+          scaled[g] = reachOpp[g] * p
+        }
+        const slice = childValues.subarray(a * nHero, (a + 1) * nHero)
+        this.bestResponseWalk(tree.children[start + a], hero, scaled, slice)
+        for (let h = 0; h < nHero; h++) out[h] += slice[h]
+      }
+    }
+
+    this.arena.release(mark)
+  }
+
+  // Total value to `hero` of best-responding, over one runout, reach-weighted
+  // across hero's range.
+  private bestResponseForRunout(hero: number, runout: number[]): number {
+    this.setRunout(runout)
+    const out = new Float64Array(this.hands[hero].count)
+    this.bestResponseWalk(0, hero, this.hands[1 - hero].weight, out)
+    return this.dot(hero, out)
+  }
+
+  // The total weight of deals that can actually happen - every pair of
+  // holdings that shares no card. Values coming out of the traversal are sums
+  // over pairs, so this is what turns them into a per-deal average.
+  private validDealWeight(): number {
+    const a = this.hands[0]
+    const b = this.hands[1]
+    let total = 0
+    for (let h = 0; h < a.count; h++) {
+      const c0 = cardToNumber(a.cards[h][0])
+      const c1 = cardToNumber(a.cards[h][1])
+      for (let g = 0; g < b.count; g++) {
+        const d0 = cardToNumber(b.cards[g][0])
+        const d1 = cardToNumber(b.cards[g][1])
+        if (c0 === d0 || c0 === d1 || c1 === d0 || c1 === d1) continue
+        total += a.weight[h] * b.weight[g]
+      }
+    }
+    return total
+  }
+
+  // Every runout in dealing order, or null when there are too many to walk.
+  // Order matters: which card arrives first decides which holdings are live
+  // during the betting in between, so these are permutations, not
+  // combinations - a flop has 47*46, not C(47,2).
+  private enumerateRunouts(limit: number): number[][] | null {
+    const needed = 5 - this.rootBoardLength
+    if (needed === 0) return [[]]
+
+    let runouts: number[][] = [[]]
+    for (let step = 0; step < needed; step++) {
+      const next: number[][] = []
+      for (const prefix of runouts) {
+        for (const card of this.deckAvailable) {
+          if (prefix.includes(card)) continue
+          next.push([...prefix, card])
+          if (next.length > limit) return null
+        }
+      }
+      runouts = next
+    }
+    return runouts
+  }
+
+  // How far the solved strategy is from equilibrium.
+  //
+  // For each player, best-respond to the other's average strategy and take the
+  // value that gains. At an equilibrium neither can gain and the two sum to
+  // zero; the amount by which they exceed zero is the exploitability, reported
+  // per deal and as a share of the starting pot.
+  //
+  // What this number covers: hands are exact, so the hand dimension is
+  // perfect-recall and a best response here is a real one. Runouts are not -
+  // the tree is K=1, so both the strategy and its best response are confined
+  // to an abstraction that cannot tell one turn card from another. This is
+  // therefore exploitability WITHIN the abstraction, and a real-game number
+  // would be worse. Do not quote it as a Nash distance.
+  exploitability(options: { maxRunouts?: number } = {}): {
+    br: [number, number]
+    perDeal: number
+    percentOfPot: number
+    runouts: number
+    exact: boolean
+  } {
+    const limit = options.maxRunouts ?? 4096
+    const enumerated = this.enumerateRunouts(limit)
+    const exact = enumerated !== null
+    const runouts = enumerated ?? Array.from({ length: limit }, () => this.sampleRunout())
+
+    const totals: [number, number] = [0, 0]
+    for (const runout of runouts) {
+      totals[0] += this.bestResponseForRunout(0, runout)
+      totals[1] += this.bestResponseForRunout(1, runout)
+    }
+
+    const z = this.validDealWeight() * runouts.length
+    const br: [number, number] = [totals[0] / z, totals[1] / z]
+    const perDeal = br[0] + br[1]
+
+    return {
+      br,
+      perDeal,
+      percentOfPot: (perDeal / this.tree.pot[0]) * 100,
+      runouts: runouts.length,
+      exact,
+    }
+  }
+
   // --- reading the result ---
 
   // The node reached by taking these actions from the root, walking through any
