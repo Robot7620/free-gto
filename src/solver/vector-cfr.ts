@@ -323,12 +323,18 @@ export class VectorCFR {
   private iterate(runout: number[]): void {
     this.iterationsRun++
     const t = this.iterationsRun
-    // Linear CFR. Weighting iteration t's regret by t is equivalent to
-    // discounting everything already accumulated by t/(t+1) and adding the new
-    // regret unweighted, up to an overall positive factor that regret matching
-    // is blind to. The discounted form is what keeps the running sum inside
-    // Float32's precision, and it costs nothing here because the vectorized
-    // traversal visits every decision node on every iteration.
+    // Linear CFR, in discounted form: scale what's accumulated by t/(t+1)
+    // and add the new regret unweighted. Unrolling that gives
+    // R_t = (1/(t+1)) * sum_s (s+1) * delta_s, so iteration s is weighted by
+    // (s+1) rather than by s, and the whole thing carries a 1/(t+1) factor.
+    // Neither matters: the factor is positive and uniform across an info set's
+    // actions, which is all regret matching reads, and (s+1)/s tends to 1 - by
+    // iteration 100 the weighting is within a percent of textbook Linear CFR.
+    // Only the first few iterations are counted slightly heavily.
+    //
+    // The discounted form is what keeps the running sum inside Float32's
+    // precision, and it costs nothing here because the vectorized traversal
+    // visits every decision node on every iteration.
     this.discount = t / (t + 1)
     this.strategyWeight = t
     this.updating = true
