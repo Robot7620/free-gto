@@ -28,10 +28,19 @@ import { Rng, makeRng } from './rng'
 // - that is the correctness gate, and it is also why the river must not move
 // when K does.
 
-// K=4: pair / flush / overcard / brick. Measured against K=1 on the same seed
-// and iteration count, this is what moved turn and flop exploitability off the
-// floor the unclassed tree sits on; the river, which has no runout, does not
-// move at all. See the table in TODO.md.
+// K=4: pair / flush / overcard / brick.
+//
+// Measured against K=1 on the same seed and the same iteration count, this
+// takes turn exploitability from 14.4% of pot to 12.0% on a rainbow board and
+// from 17.8% to 12.1% on a two-tone one - the bigger gain being on the board
+// where the flush class is reachable at all, which is the mechanism showing up
+// where it should. K=8 lands on the same place as K=4 for four times the flop
+// memory. The river, having no runout, does not move at any K.
+//
+// Note that the improvement is only visible on exploitability() and not on
+// clairvoyantExploitability(), where K=4 reads slightly WORSE. See that
+// method's comment; a best response that is handed the whole runout up front
+// collects a rent no strategy can lower, and it swamps the difference.
 export const DEFAULT_RUNOUT_CLASSES = 4
 
 export interface VectorCFROptions {

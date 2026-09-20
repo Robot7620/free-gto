@@ -3,15 +3,19 @@ import { Card } from '../engine/cards'
 // Which kind of card just fell.
 //
 // The public tree records the street but not the card, so at K=1 the solver
-// plays a flush-completing turn exactly like a brick. That costs ~20% of pot on
-// the turn and ~55% on the flop - measured, and it does not move with more
-// compute, because it is the abstraction and not the sampling. See TODO.md.
+// plays a flush-completing turn exactly like a brick. Measured on a turn, that
+// costs 14.4% of pot on a rainbow board and 17.8% on a two-tone one, and it
+// does not move with more compute, because it is the abstraction and not the
+// sampling. K=4 takes those to 12.0% on both. See TODO.md for the table.
 //
 // Classing the runout buys back the distinction the tree is missing without
 // paying for all 47 cards: the chance node gets one successor per class instead
 // of one in total, and the solver routes the dealt card to its class. What the
 // classes cost is memory and samples-per-slot, not time - a traversal still
 // visits exactly one successor per chance node, whatever K is.
+//
+// K=8 was measured too and buys nothing over K=4 at the same iteration count,
+// for four times the memory on a flop. Four is the default for that reason.
 //
 // The scheme is deliberately about the card's *relationship to the board*, not
 // its face value. An offsuit 7 is a brick on one board and the card that pairs
