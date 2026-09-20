@@ -448,3 +448,66 @@ Fixed in `49d8d89`, and the app re-driven afterwards.
 3. **The exploitability pass could be made cancellable** by chunking it over
    runouts. It is the one part of the worker that cannot be interrupted except
    by killing the thread.
+
+## Part 2 - the flop number, and what K should default to
+
+### First: the regime the app actually runs in
+
+Added to the plan after building part 3, because part 3 made the gap obvious.
+Every sweep on this branch runs to 20,000 or 80,000 iterations. The app's
+default budget is ten seconds, and per-iteration cost is flat in K but not
+across streets, so ten seconds buys about 16,000 river iterations, 2,100 turn
+ones and 420 flop ones - the last measured, not derived, from a browser run
+that did 416 in eight seconds. The converged answer is not evidence about the
+default.
+
+`bench/app-regime.test.ts`, exact at every depth:
+
+**Turn**, with the 8,000 column from the main diagnostic for continuity:
+
+| iterations | rainbow K=1 | rainbow K=4 | two-tone K=1 | two-tone K=4 |
+|---|---|---|---|---|
+| 500 | **25.161%** | 27.333% | **26.465%** | 33.802% |
+| 1,000 | **18.390%** | 21.252% | **22.155%** | 24.584% |
+| 2,000 | **16.217%** | 17.853% | 19.896% | **18.822%** |
+| 4,000 | 15.277% | **13.873%** | 18.176% | **15.254%** |
+| 8,000 | 14.569% | **12.581%** | 18.169% | **13.492%** |
+
+**Flop**:
+
+| iterations | rainbow K=1 | rainbow K=4 | two-tone K=1 | two-tone K=4 |
+|---|---|---|---|---|
+| 400 | **57.581%** | 105.054% | **65.656%** | 122.602% |
+| 1,600 | **41.673%** | 53.859% | **51.821%** | 60.381% |
+
+### What that shows
+
+**K=4 is a trade against iterations, not against boards.** It is behind when
+starved and ahead when converged, and that is true on every board and every
+street measured. Nothing here is a case of the class scheme being wrong; it is
+the same curve shifted.
+
+**The crossover moves later with each chance node.** On a turn, one chance
+node and four-way dilution, K=4 passes K=1 between 1,000 and 2,000 iterations
+on the two-tone board and between 2,000 and 4,000 on the rainbow one. On a
+flop, two chance levels and sixteen-way dilution, it has not crossed by 1,600
+and is still nearly a third behind.
+
+**K=4 is converging much faster where it is behind.** From 400 to 1,600 flop
+iterations it drops 49% on the rainbow board and 51% on the two-tone one,
+against 28% and 21% for K=1. A curve that steep does cross; the main sweep's
+8,000 and 20,000 checkpoints are what say where.
+
+**The app's default budget lands on the wrong side of the turn crossover and
+far on the wrong side of the flop one.** Ten seconds is ~2,100 turn iterations
+- essentially at the crossover, a coin flip - and ~420 flop iterations, where
+K=4 is close to twice as exploitable.
+
+### A cross-check worth recording
+
+The browser did 416 flop iterations at K=4 on `Ks 9h 4c` and reported 105.51%
+of pot. This bench, a separate process with no browser in it, did 400 on the
+same board and reports 105.054%. Two independent harnesses - one a Web Worker
+driving `exploitability()` through the UI, one a node bench calling it
+directly - landing within half a point at a matching iteration count. That is
+a check on the whole path the displayed number takes, not just on the solver.
