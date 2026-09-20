@@ -49,13 +49,7 @@ function getFlushSuit(cards: Card[]): Suit | null {
 function isStraight(cards: Card[]): { isStraight: boolean; highRank: Rank | null } {
   const ranks = new Set(cards.map(c => c.rank))
 
-  // Check wheel (A-2-3-4-5)
-  if (ranks.has(Rank.Ace) && ranks.has(Rank.Two) && ranks.has(Rank.Three) &&
-      ranks.has(Rank.Four) && ranks.has(Rank.Five)) {
-    return { isStraight: true, highRank: Rank.Five }
-  }
-
-  // Check other straights
+  // Highest first, so the first run of five found is the best one.
   for (let high = Rank.Ace; high >= Rank.Five; high--) {
     let consecutive = 0
     for (let r = high; r >= 0 && consecutive < 5; r--) {
@@ -68,6 +62,19 @@ function isStraight(cards: Card[]): { isStraight: boolean; highRank: Rank | null
     if (consecutive >= 5) {
       return { isStraight: true, highRank: high as Rank }
     }
+  }
+
+  // The wheel is checked last, and only as a fallback. The loop above cannot
+  // find it, because the ace sits at the top of the rank order rather than
+  // below the two - hence the special case. But it is the *lowest* straight,
+  // so testing for it first meant a hand holding A,2,3,4,5 and a 6 scored as
+  // five-high when it is a six-high straight. Seven cards leave plenty of room
+  // for both.
+  if (
+    ranks.has(Rank.Ace) && ranks.has(Rank.Two) && ranks.has(Rank.Three) &&
+    ranks.has(Rank.Four) && ranks.has(Rank.Five)
+  ) {
+    return { isStraight: true, highRank: Rank.Five }
   }
 
   return { isStraight: false, highRank: null }
