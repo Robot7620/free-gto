@@ -342,7 +342,8 @@ message already in flight.
 ### Showing exploitability
 
 It is posted in its own message *after* the strategy, not with it. An exact
-flop pass took **67.2 s** in the browser - longer than most solves - and
+flop pass took **62-67 s** in the browser across runs - longer than most
+solves - and
 holding a finished strategy back behind a measurement of it would be the wrong
 trade. The panel says "Measuring..." in the meantime and states that the
 strategy above is already final.
@@ -369,18 +370,19 @@ branch rather than chosen for looks.
 ### Gate 2, in detail
 
 Headless chromium against the dev server, driving the app the way a person
-would. Every number below is from that run.
+would. Every number below is from one run of it, the last, taken with the
+measurement sweeps finished so nothing else was competing for a core.
 
 | step | result |
 |---|---|
 | Load, default flop `Ks 9h 4c` | renders, button enabled |
-| Solve 8 s | 416 iterations, 51,111 nodes, 5,196,825 slots, 65.1 MiB - matching task A's sizing table exactly |
-| Exploitability pass | landed 67.2 s later at **105.51% of pot**, badged "indicative only" |
+| Solve 8 s | 447 iterations, 51,111 nodes, 5,196,825 slots, 65.1 MiB - matching task A's sizing table exactly |
+| Exploitability pass | landed 61.6 s later at **101.75% of pot**, badged "indicative only" |
 | Add `2d` `7s` -> river | strategy cleared by the edit |
-| Solve 5 s | 7,732 iterations, 123 nodes, **0.44% of pot** |
+| Solve 5 s | 8,715 iterations, 123 nodes, **0.39% of pot** |
 | Remove `AA` from BTN | total combos 108.0 -> 102.0, strategy cleared |
-| Solve 5 s | 8,093 iterations, 12,810 slots, **0.42% of pot** |
-| Stack to 40bb, solve 5 s | 12,462 iterations, 75 nodes, **0.35% of pot** |
+| Solve 5 s | 8,889 iterations, 12,810 slots, **0.40% of pot** |
+| Stack to 40bb, solve 5 s | 14,099 iterations, 75 nodes, **0.32% of pot** |
 | Reset to default | board, ranges, stack 100, pot 10, seconds 10 all restored |
 | Stop mid-solve | button returns to idle, no stray messages afterwards |
 | `console --errors` | **none**, and no page errors |
@@ -400,18 +402,24 @@ This is the one the worker exists for, so it was measured rather than asserted.
 A `requestAnimationFrame` loop sampled frame-to-frame deltas on the main thread
 throughout a flop solve - the heaviest case, 19 ms per iteration:
 
-| | ms |
-|---|---|
-| frames sampled | 185 |
-| median delta | 16.7 |
-| p95 delta | 16.8 |
-| worst delta | 66.6 |
+Run twice, and both are reported because the difference between them is
+informative. The first was taken while the two measurement sweeps had a core
+each; the second after they finished.
 
-A clean 60 Hz through the median and the p95; 16.7 ms is the frame budget
-itself, so the main thread was doing nothing but rendering. A real interaction
-during the solve - focusing an input and waiting two frames - completed in
-**28.4 ms**. The single 66.6 ms outlier is four dropped frames, once, and lines
-up with worker startup and module load rather than with the solve.
+| | contended | clean |
+|---|---|---|
+| frames sampled | 185 | 185 |
+| median delta | 16.7 | 16.7 |
+| p95 delta | 16.8 | 16.8 |
+| worst delta | 66.6 | 33.4 |
+| input round trip mid-solve | 28.4 | 34.6 |
+
+A clean 60 Hz through the median and the p95 in both; 16.7 ms is the frame
+budget itself, so the main thread was doing nothing but rendering while a flop
+solve ran. The outlier halves once the machine is free, which places it at
+worker startup and module load rather than anywhere in the solve loop. That
+the median does not move under a loaded machine is the stronger result of the
+two.
 
 For contrast with the old arrangement: a 5,000-iteration slice of the sampled
 solver held the main thread for as long as it took, and the same page with a
@@ -451,7 +459,8 @@ Fixed in `49d8d89`, and the app re-driven afterwards.
 
 ### What I would check first next
 
-1. **A ten-second flop solve is 416 iterations and 105% exploitable.** The app
+1. **A ten-second flop solve is ~420 iterations and around 105% exploitable.**
+   The app
    is honest about that - the badge says "indicative only" and the number is
    right there - but a first-time user's first click lands on it. Nothing here
    is wrong; the flop is just expensive. Worth deciding whether the default
@@ -520,12 +529,17 @@ K=4 is close to twice as exploitable.
 
 ### A cross-check worth recording
 
-The browser did 416 flop iterations at K=4 on `Ks 9h 4c` and reported 105.51%
-of pot. This bench, a separate process with no browser in it, did 400 on the
-same board and reports 105.054%. Two independent harnesses - one a Web Worker
-driving `exploitability()` through the UI, one a node bench calling it
-directly - landing within half a point at a matching iteration count. That is
-a check on the whole path the displayed number takes, not just on the solver.
+An earlier browser run - the contended one, which is why it managed 416
+iterations in eight seconds rather than the 447 of the clean run in the gate
+table - reported 105.51% of pot on `Ks 9h 4c` at K=4. This bench, a separate
+process with no browser in it, did 400 iterations on the same board and
+reports 105.054%.
+
+Two independent harnesses - one a Web Worker feeding `exploitability()`
+through the UI, one a node bench calling it directly - landing within half a
+point at a near-matching iteration count on a number above 100. That checks
+the whole path the displayed figure travels, not just the solver at the end of
+it.
 
 ### The flop, measured
 
