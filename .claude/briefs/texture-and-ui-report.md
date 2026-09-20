@@ -1,9 +1,11 @@
-# Report: runout texture classes, and the UI that did not get built
+# Report: runout texture classes, and the UI
 
 Branch `texture-classes`, cut from `phase-4` at `81d77b2`. Pushed.
 
-**Task A landed. Task B was not started.** The sequencing in the brief was right:
-A took the session. What B needs to know from A is at the bottom.
+**Task A landed in the first session. Task B landed in the second**, along with
+the corrected flop measurement A left open. The three parts of the overnight
+brief are reported in their own sections below; this first half is the original
+Task A report, kept as written except where it said Task B had not been started.
 
 ## The short version
 
@@ -138,7 +140,7 @@ and K=4.
 
 | gate | verdict |
 |---|---|
-| 1. `npm test` green, `npm run build` clean | <!-- PENDING --> |
+| 1. `npm test` green, `npm run build` clean | **Passed** - 84 tests in 12 files, 40.2 s; `tsc` clean, `vite build` in 709 ms |
 | 2. River unchanged | **Passed**, in the sharpest form available |
 | 3. Turn and flop measurably improve | <!-- PENDING --> |
 | 4. Flop memory under ~500 MB | **Passed** - 65.1 MiB of arrays at K=4, 234.6 MiB at K=8 |
@@ -201,9 +203,10 @@ necessarily the same number, because they are the same node.
    than K=4 at equal iterations is consistent with dilution rather than with the
    extra splits being wrong, but it does not separate them.
 
-## For whoever picks up Task B
+## What A established that B needed
 
-Nothing of B was built. What A establishes that B needs:
+Written before B was built, and worth keeping because every line of it turned
+out to be load-bearing:
 
 - **A time budget is the right control, not an iteration count.** Per-iteration
   cost is flat in K and stable: ~19 ms on a flop, ~4.7 ms on a turn, ~0.6 ms on
@@ -221,3 +224,164 @@ Nothing of B was built. What A establishes that B needs:
 - **An exploitability pass is not free either.** On a flop it enumerates all
   2,352 ordered runouts. It should be computed once when the solve finishes, not
   polled during it.
+
+---
+
+# The overnight brief
+
+Three parts, in order. Part 1 tidied up what the first session left in flight,
+part 2 answered the question that session flagged as the most questionable
+thing on the branch, and part 3 built the worker and the UI.
+
+## Part 1 - what was in flight
+
+| commit | what |
+|---|---|
+| `f5277a6` | The comments over `runoutClass` and `DEFAULT_RUNOUT_CLASSES` were still quoting the clairvoyant ~20% / ~55% figures and claiming an improvement for K=4 that only the corrected instrument shows. Both now carry measured numbers and say where the gain comes from. |
+
+Gate 1 is filled in the gate table above: 84 tests in 12 files green in 40.2 s,
+`tsc` clean, `vite build` clean in 709 ms - measured before any of tonight's
+code was written, so it is a verdict on task A rather than on tonight.
+
+`TODO.md` is corrected in its own commit; see part 2, since the correction
+needed the flop number part 2 produces.
+
+## Part 3 - the worker and the UI
+
+Taken out of order in this write-up because part 2 is a measurement that ran
+for hours while this was being built. It landed in `152508f`.
+
+### What changed
+
+The page was driving `CFRSolver` - the old strength-bucketed sampler - from the
+main thread, in 5,000-iteration slices with a `setTimeout(0)` between them, for
+a fixed 200,000 iterations. All three of those are now different.
+
+**`VectorCFR` instead of `CFRSolver`.** Hole cards are exact and every holding
+in both ranges updates on every iteration. `cfr.ts` and `infoset.ts` are
+untouched and still tested; nothing on the page imports `CFRSolver` any more.
+
+**A time budget instead of an iteration count.** 200,000 iterations is about
+two minutes on a river and about an hour on a flop, because an iteration is
+~0.6 ms on one and ~19 ms on the other, so the same number means nothing in
+common across boards. The worker now takes seconds: it runs a four-iteration
+probe, measures its own rate, and sizes each subsequent chunk at ~150 ms,
+clamped to what is left of the budget and never below one iteration. Per
+iteration the cost is flat in K, so the budget never has to know how the runout
+is classed - which is the fact task A turned up and the reason this works.
+
+**A Web Worker.** Slicing on the main thread hid the problem rather than
+solving it: a single flop iteration is 19 ms of typed-array arithmetic that
+nothing can interrupt. And it could not have hidden the exploitability pass at
+all, which is one uninterruptible synchronous walk.
+
+Cancellation is `worker.terminate()` from the page, not a message. The worker
+loop never yields, so a stop message would sit unread until the thing it was
+sent to stop had already finished. Every reply carries the id of the request
+that caused it and stale ids are dropped, because terminate does not recall a
+message already in flight.
+
+### Showing exploitability
+
+It is posted in its own message *after* the strategy, not with it. An exact
+flop pass took **67.2 s** in the browser - longer than most solves - and
+holding a finished strategy back behind a measurement of it would be the wrong
+trade. The panel says "Measuring..." in the meantime and states that the
+strategy above is already final.
+
+The number shown is `exploitability()`. The label is careful, because the
+number is easy to over-read: a best response confined to this same betting tree
+counter-plays every hole-card combination and every runout card separately, so
+those dimensions are honest, but it may only choose among the bet sizes the
+tree offers. A counter-strategy free to bet any size gains more. The panel says
+so, and says not to read it as a Nash distance.
+
+A coloured verdict sits beside it - converged under 1%, approximate under 15%,
+indicative only above - with thresholds taken from the measurements on this
+branch rather than chosen for looks.
+
+### Gates
+
+| gate | verdict |
+|---|---|
+| 1. `npm test` green, `npm run build` clean | **Passed** - 87 tests in 13 files, 44.8 s; `tsc` clean, `vite build` in 809 ms, worker emitted as its own 27.5 kB chunk |
+| 2. Driven in a real browser | **Passed** - see below |
+| 3. UI responsive while solving | **Passed** - 16.7 ms median frame delta during a flop solve |
+
+### Gate 2, in detail
+
+Headless chromium against the dev server, driving the app the way a person
+would. Every number below is from that run.
+
+| step | result |
+|---|---|
+| Load, default flop `Ks 9h 4c` | renders, button enabled |
+| Solve 8 s | 416 iterations, 51,111 nodes, 5,196,825 slots, 65.1 MiB - matching task A's sizing table exactly |
+| Exploitability pass | landed 67.2 s later at **105.51% of pot**, badged "indicative only" |
+| Add `2d` `7s` -> river | strategy cleared by the edit |
+| Solve 5 s | 7,732 iterations, 123 nodes, **0.44% of pot** |
+| Remove `AA` from BTN | total combos 108.0 -> 102.0, strategy cleared |
+| Solve 5 s | 8,093 iterations, 12,810 slots, **0.42% of pot** |
+| Stack to 40bb, solve 5 s | 12,462 iterations, 75 nodes, **0.35% of pot** |
+| Reset to default | board, ranges, stack 100, pot 10, seconds 10 all restored |
+| Stop mid-solve | button returns to idle, no stray messages afterwards |
+| `console --errors` | **none**, and no page errors |
+
+Screenshots taken at the initial load, mid-measure, flop done, river done,
+range edited and after reset.
+
+### Gate 3, in detail
+
+This is the one the worker exists for, so it was measured rather than asserted.
+A `requestAnimationFrame` loop sampled frame-to-frame deltas on the main thread
+throughout a flop solve - the heaviest case, 19 ms per iteration:
+
+| | ms |
+|---|---|
+| frames sampled | 185 |
+| median delta | 16.7 |
+| p95 delta | 16.8 |
+| worst delta | 66.6 |
+
+A clean 60 Hz through the median and the p95; 16.7 ms is the frame budget
+itself, so the main thread was doing nothing but rendering. A real interaction
+during the solve - focusing an input and waiting two frames - completed in
+**28.4 ms**. The single 66.6 ms outlier is four dropped frames, once, and lines
+up with worker startup and module load rather than with the solve.
+
+For contrast with the old arrangement: a 5,000-iteration slice of the sampled
+solver held the main thread for as long as it took, and the same page with a
+flop-sized `VectorCFR` slice would have been 19 ms of hard block per iteration.
+
+### What I assumed in part 3
+
+- **The budget times solving, not building.** The showdown table takes ~0.9 s on
+  a flop and is excluded from the clock, so "8 seconds" was 8.8 s of wall time
+  in the browser. Building has its own status so the button is never silently
+  stalled. The alternative - counting the build against the budget - makes a
+  short budget on a flop return nothing at all.
+- **A fresh worker per solve.** No showdown table is reused between solves on
+  the same board, costing ~0.9 s each time on a flop. Terminate-and-respawn is
+  the only cancellation that can interrupt an exploitability pass, and the
+  saving was not worth a second mechanism.
+- **Ten seconds as the default budget.** Right for a river, which is
+  the common case and converges inside it. Honest but poor for a flop - see
+  below.
+- **The exploitability pass always runs.** It costs a minute on a flop, and
+  someone who wanted the strategy and not the number pays for it anyway. It is
+  cancellable, and the strategy is on screen before it starts.
+
+### What I would check first next
+
+1. **A ten-second flop solve is 416 iterations and 105% exploitable.** The app
+   is honest about that - the badge says "indicative only" and the number is
+   right there - but a first-time user's first click lands on it. Nothing here
+   is wrong; the flop is just expensive. Worth deciding whether the default
+   budget should depend on the street, or whether the panel should say what a
+   given budget will buy before it is spent rather than after.
+2. **Caching the showdown table across solves on the same board** would take
+   ~0.9 s off every flop re-solve. It needs a second cancellation mechanism to
+   keep a worker alive across solves, which is why it is not here.
+3. **The exploitability pass could be made cancellable** by chunking it over
+   runouts. It is the one part of the worker that cannot be interrupted except
+   by killing the thread.
