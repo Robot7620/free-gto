@@ -228,6 +228,12 @@ necessarily the same number, because they are the same node.
 
 ## What I would check first next
 
+*Written at the end of task A. Items 1, 3 and 4 were checked overnight - see
+part 2 below. Item 3 was half right: dilution is exactly what is happening
+below a few thousand iterations, and is not what is happening at convergence,
+where both curves are flat. Item 4 does not survive it - the class scheme is
+not wrong, it is slow to pay for itself. Item 2 is still open.*
+
 1. **Whether K=4 should be the default at all.** On the evidence here it should
    probably be 1 until the corrected instrument says otherwise on a flop. The
    constant is one line and every test passes either way.
