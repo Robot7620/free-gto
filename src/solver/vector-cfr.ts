@@ -41,7 +41,12 @@ import { Rng, makeRng } from './rng'
 // clairvoyantExploitability(), where K=4 reads slightly WORSE. See that
 // method's comment; a best response that is handed the whole runout up front
 // collects a rent no strategy can lower, and it swamps the difference.
-export const DEFAULT_RUNOUT_CLASSES = 4
+//
+// Annotated `number` rather than left to infer `4`: it is a default that is
+// expected to be changed, and a literal type makes anything that branches on
+// it - the page describing the scheme it is running, for one - fail to compile
+// for asking a question the compiler has already decided the answer to.
+export const DEFAULT_RUNOUT_CLASSES: number = 4
 
 export interface VectorCFROptions {
   stack: number

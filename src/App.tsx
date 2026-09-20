@@ -4,9 +4,12 @@ import { Card as CardType, stringToCard, cardToNumber } from './engine/cards'
 import { RangeGrid } from './components/RangeGrid'
 import { BoardView } from './components/BoardView'
 import { CardPicker } from './components/CardPicker'
-import { StrategyTable, StrategyAction } from './components/StrategyTable'
-import { CFRSolver } from './solver/cfr'
-import { createInitialNode, DEFAULT_TREE_CONFIG } from './solver/game-tree'
+import { StrategyTable } from './components/StrategyTable'
+import { ExploitabilityBadge } from './components/ExploitabilityBadge'
+import { DEFAULT_TREE_CONFIG } from './solver/game-tree'
+import { DEFAULT_RUNOUT_CLASSES } from './solver/vector-cfr'
+import { classNames } from './solver/runout-class'
+import { useSolver } from './useSolver'
 
 const DEFAULT_BTN_RANGE = 'AA,KK,QQ,JJ,TT,99,88,77,66,55,AKs,AQs,AJs,ATs,KQs,KJs,AKo,AQo'
 const DEFAULT_BB_RANGE =
@@ -15,10 +18,6 @@ const DEFAULT_BOARD = ['Ks', '9h', '4c']
 const DEFAULT_STACK = 100
 const DEFAULT_POT = 10
 
-// The lean 3-size tree needs more iterations than the old rich one, and can
-// afford them: it settles at ~70k info sets instead of growing past 1.4M.
-// Measured on a flop, median visits per info set: 20k iters -> 2, 100k -> 4,
-// 300k -> 9 (the level at which a river solve produces sane output), at ~49s.
 // Read off the tree config rather than restated by hand: this line already
 // went stale once, advertising sizings the solver had stopped offering.
 const SIZING_LABEL = [
@@ -26,8 +25,22 @@ const SIZING_LABEL = [
   'all-in',
 ].join(', ')
 
-const ITERATIONS = 200000
-const UPDATE_INTERVAL = 5000
+// Same reason as the sizing label: named from the class scheme itself, so
+// changing the default K cannot leave the page describing the old one.
+const RUNOUT_LABEL =
+  DEFAULT_RUNOUT_CLASSES === 1
+    ? 'Every runout card treated alike - the tree records the street, not which card fell'
+    : `Runouts sorted into ${DEFAULT_RUNOUT_CLASSES} texture classes (${classNames(
+        DEFAULT_RUNOUT_CLASSES
+      ).join(', ')})`
+
+// Seconds, not iterations. An iteration costs the same at every K but very
+// different amounts per street - about 0.6 ms on a river against 19 ms on a
+// flop - so a count that is sensible on one board is either instant or
+// interminable on another. Ten seconds is a few thousand flop iterations or a
+// good fifteen thousand river ones, which is the right shape for a default:
+// enough to be worth looking at, short enough that nobody walks away.
+const DEFAULT_SECONDS = 10
 
 function App() {
   const [btnRange, setBtnRange] = useState<Range>(Range.empty())
@@ -35,13 +48,15 @@ function App() {
   const [board, setBoard] = useState<CardType[]>([])
   const [stack, setStack] = useState(DEFAULT_STACK)
   const [pot, setPot] = useState(DEFAULT_POT)
-  const [strategy, setStrategy] = useState<StrategyAction[]>([])
-  const [btnStrategy, setBtnStrategy] = useState<StrategyAction[]>([])
-  const [isSolving, setIsSolving] = useState(false)
-  const [solveProgress, setSolveProgress] = useState(0)
+  const [seconds, setSeconds] = useState(DEFAULT_SECONDS)
+  const { state, solve, reset: resetSolver } = useSolver()
 
   useEffect(() => {
     resetScenario()
+    // Setting the scenario up once on mount. resetScenario closes over
+    // resetSolver, which is stable, but listing it would still re-run this on
+    // any future change to the hook and wipe whatever the user had entered.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   function resetScenario() {
@@ -50,58 +65,49 @@ function App() {
     setBoard(DEFAULT_BOARD.map(stringToCard))
     setStack(DEFAULT_STACK)
     setPot(DEFAULT_POT)
-    setStrategy([])
-    setBtnStrategy([])
+    setSeconds(DEFAULT_SECONDS)
+    resetSolver()
   }
 
-  // Any change to the spot invalidates the strategy that was solved for it.
+  // Any change to the spot invalidates the strategy that was solved for it,
+  // and stops a solve that is still running for the old one.
+  function invalidate() {
+    resetSolver()
+  }
+
   function toggleCombo(range: Range, setRange: (r: Range) => void, combo: string) {
     const next = range.clone()
     next.setWeight(combo, range.getWeight(combo) > 0 ? 0 : 1)
     setRange(next)
-    setStrategy([])
-    setBtnStrategy([])
+    invalidate()
   }
 
   function toggleBoardCard(card: CardType) {
     const n = cardToNumber(card)
     const exists = board.some(c => cardToNumber(c) === n)
     setBoard(exists ? board.filter(c => cardToNumber(c) !== n) : [...board, card])
-    setStrategy([])
-    setBtnStrategy([])
+    invalidate()
   }
 
   const canSolve =
     board.length >= 3 && !btnRange.isEmpty() && !bbRange.isEmpty() && pot > 0 && stack > 0
 
-  const handleSolve = async () => {
-    setIsSolving(true)
-    setSolveProgress(0)
+  const busy = state.phase === 'building' || state.phase === 'solving'
+  const hasStrategy = state.bb.length > 0
 
-    const solver = new CFRSolver()
-    const rootNode = createInitialNode(stack, pot, board)
-
-    for (let i = 0; i < ITERATIONS; i += UPDATE_INTERVAL) {
-      await new Promise(resolve => setTimeout(resolve, 0))
-
-      solver.solve(rootNode, [btnRange, bbRange], board, UPDATE_INTERVAL)
-      setSolveProgress(((i + UPDATE_INTERVAL) / ITERATIONS) * 100)
-    }
-
-    const toActions = (s: Map<string, number>): StrategyAction[] =>
-      Array.from(s.entries()).map(([action, frequency]) => ({ action, frequency }))
-
-    // OOP acts first postflop, so BB's opening decision is the root and BTN's
-    // first decision is the node after BB checks.
-    setStrategy(toActions(solver.getRangeStrategy(bbRange, board)))
-    setBtnStrategy(toActions(solver.getRangeStrategy(btnRange, board, 'check')))
-
-    setIsSolving(false)
-    setSolveProgress(100)
+  const handleSolve = () => {
+    solve({ stack, pot, board, btnRange, bbRange, seconds })
   }
 
   const streetLabel =
     board.length >= 5 ? 'River' : board.length === 4 ? 'Turn' : board.length === 3 ? 'Flop' : 'Board'
+
+  const buttonLabel =
+    state.phase === 'building'
+      ? 'Building the board table...'
+      : state.phase === 'solving'
+        ? `Solving... ${(state.fraction * 100).toFixed(0)}%`
+        : 'Solve This Spot'
 
   return (
     <div className="min-h-screen bg-gray-100">
@@ -152,8 +158,7 @@ function App() {
                   value={stack}
                   onChange={e => {
                     setStack(Math.max(1, Number(e.target.value) || 0))
-                    setStrategy([])
-                    setBtnStrategy([])
+                    invalidate()
                   }}
                   className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
                 />
@@ -170,11 +175,35 @@ function App() {
                   value={pot}
                   onChange={e => {
                     setPot(Math.max(1, Number(e.target.value) || 0))
-                    setStrategy([])
-                    setBtnStrategy([])
+                    invalidate()
                   }}
                   className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
                 />
+              </div>
+
+              <div>
+                <label
+                  htmlFor="seconds"
+                  className="block text-sm font-medium text-gray-700 mb-1"
+                >
+                  Solve for (seconds)
+                </label>
+                <input
+                  id="seconds"
+                  type="number"
+                  min={1}
+                  max={600}
+                  value={seconds}
+                  onChange={e =>
+                    setSeconds(Math.min(600, Math.max(1, Number(e.target.value) || 0)))
+                  }
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+                <p className="text-xs text-gray-500 mt-1">
+                  A time budget rather than an iteration count: an iteration is
+                  ~0.6 ms on a river and ~19 ms on a flop, so seconds mean the
+                  same thing on every board and iterations do not.
+                </p>
               </div>
             </div>
           </div>
@@ -204,8 +233,11 @@ function App() {
 
         <div className="grid grid-cols-1 xl:grid-cols-2 gap-6 mb-6">
           <div className="space-y-6">
-            {strategy.length > 0 ? (
-              <StrategyTable strategies={strategy} title={`BB (OOP) - first to act on the ${streetLabel.toLowerCase()}`} />
+            {hasStrategy ? (
+              <StrategyTable
+                strategies={state.bb}
+                title={`BB (OOP) - first to act on the ${streetLabel.toLowerCase()}`}
+              />
             ) : (
               <div className="bg-white p-4 rounded-lg shadow-md">
                 <h3 className="text-lg font-semibold mb-3">BB Strategy (OOP)</h3>
@@ -215,8 +247,15 @@ function App() {
               </div>
             )}
 
-            {btnStrategy.length > 0 && (
-              <StrategyTable strategies={btnStrategy} title="BTN (IP) - after BB checks" />
+            {state.btn.length > 0 && (
+              <StrategyTable strategies={state.btn} title="BTN (IP) - after BB checks" />
+            )}
+
+            {hasStrategy && (
+              <ExploitabilityBadge
+                percentOfPot={state.exploitability?.percentOfPot ?? null}
+                measuring={state.phase === 'measuring'}
+              />
             )}
           </div>
 
@@ -224,48 +263,86 @@ function App() {
             <h3 className="text-lg font-semibold mb-3">Solver Controls</h3>
             <button
               onClick={handleSolve}
-              disabled={isSolving || !canSolve}
+              disabled={busy || !canSolve}
+              data-testid="solve"
               className={`
                 w-full px-6 py-3 rounded-lg font-semibold text-white
-                ${isSolving || !canSolve
+                ${busy || !canSolve
                   ? 'bg-gray-400 cursor-not-allowed'
                   : 'bg-blue-600 hover:bg-blue-700 active:bg-blue-800'
                 }
                 transition-colors
               `}
             >
-              {isSolving ? `Solving... ${solveProgress.toFixed(0)}%` : 'Solve This Spot'}
+              {buttonLabel}
             </button>
 
-            {!canSolve && !isSolving && (
+            {!canSolve && !busy && (
               <p className="text-sm text-amber-700 mt-2">
                 Needs at least 3 board cards and a hand in each range.
               </p>
             )}
 
-            {isSolving && (
+            {(busy || state.phase === 'measuring') && (
               <div className="mt-4">
                 <div className="bg-gray-200 rounded-full h-2">
                   <div
                     className="bg-blue-600 h-2 rounded-full transition-all duration-300"
-                    style={{ width: `${solveProgress}%` }}
+                    style={{ width: `${state.fraction * 100}%` }}
                   ></div>
                 </div>
+                <div className="flex justify-between mt-2 text-xs text-gray-500">
+                  <span data-testid="iterations">
+                    {state.iterations.toLocaleString()} iterations
+                  </span>
+                  <span>{(state.elapsedMs / 1000).toFixed(1)}s</span>
+                </div>
+                <button
+                  onClick={resetSolver}
+                  data-testid="stop"
+                  className="mt-3 w-full px-4 py-2 rounded-lg text-sm font-medium border border-gray-300 text-gray-700 hover:bg-gray-50"
+                >
+                  Stop
+                </button>
               </div>
+            )}
+
+            {state.phase === 'done' && (
+              <p className="mt-3 text-sm text-gray-600" data-testid="solve-summary">
+                {state.iterations.toLocaleString()} iterations in{' '}
+                {(state.elapsedMs / 1000).toFixed(1)}s.
+              </p>
+            )}
+
+            {state.phase === 'error' && (
+              <p className="mt-3 text-sm text-red-700" data-testid="solve-error">
+                The solve failed: {state.error}
+              </p>
             )}
 
             <div className="mt-6 text-sm text-gray-600">
               <h4 className="font-semibold mb-2">About the Solver</h4>
               <p className="mb-2">
-                This uses Counterfactual Regret Minimization (CFR) to compute GTO strategies.
+                Vectorized counterfactual regret minimization, run in a Web
+                Worker so the page stays usable while it works. Every holding in
+                both ranges is updated on every iteration - hole cards are exact,
+                not bucketed by strength.
               </p>
               <ul className="list-disc list-inside space-y-1">
-                <li>{ITERATIONS.toLocaleString()} iterations, chance-sampled over both ranges</li>
+                <li>Runs for the time budget above, not a fixed iteration count</li>
                 <li>Bet sizing: {SIZING_LABEL}</li>
                 <li>
                   Plays to showdown through the turn and river, at most{' '}
                   {DEFAULT_TREE_CONFIG.maxAggressiveActions} bets or raises per street
                 </li>
+                <li>{RUNOUT_LABEL}</li>
+                {state.shape && (
+                  <li data-testid="shape">
+                    This tree: {state.shape.nodes.toLocaleString()} nodes,{' '}
+                    {state.shape.slots.toLocaleString()} regret slots,{' '}
+                    {(state.shape.bytes / 1024 / 1024).toFixed(1)} MiB
+                  </li>
+                )}
               </ul>
             </div>
           </div>
