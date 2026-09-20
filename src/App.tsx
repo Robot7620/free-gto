@@ -26,13 +26,16 @@ const SIZING_LABEL = [
 ].join(', ')
 
 // Same reason as the sizing label: named from the class scheme itself, so
-// changing the default K cannot leave the page describing the old one.
-const RUNOUT_LABEL =
-  DEFAULT_RUNOUT_CLASSES === 1
-    ? 'Every runout card treated alike - the tree records the street, not which card fell'
-    : `Runouts sorted into ${DEFAULT_RUNOUT_CLASSES} texture classes (${classNames(
-        DEFAULT_RUNOUT_CLASSES
-      ).join(', ')})`
+// changing K cannot leave the page describing the old one. Taken from the tree
+// that was actually solved where there is one, and from the default before the
+// first solve - the two can only differ once something lets K be chosen, but
+// describing the solve in front of you is the version that stays true.
+function runoutLabel(classCount: number): string {
+  if (classCount === 1) {
+    return 'Every runout card treated alike - the tree records the street, not which card fell'
+  }
+  return `Runouts sorted into ${classCount} texture classes (${classNames(classCount).join(', ')})`
+}
 
 // Seconds, not iterations. An iteration costs the same at every K but very
 // different amounts per street - about 0.6 ms on a river against 19 ms on a
@@ -335,7 +338,7 @@ function App() {
                   Plays to showdown through the turn and river, at most{' '}
                   {DEFAULT_TREE_CONFIG.maxAggressiveActions} bets or raises per street
                 </li>
-                <li>{RUNOUT_LABEL}</li>
+                <li>{runoutLabel(state.shape?.classCount ?? DEFAULT_RUNOUT_CLASSES)}</li>
                 {state.shape && (
                   <li data-testid="shape">
                     This tree: {state.shape.nodes.toLocaleString()} nodes,{' '}
