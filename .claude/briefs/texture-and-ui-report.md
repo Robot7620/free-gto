@@ -304,7 +304,7 @@ branch rather than chosen for looks.
 
 | gate | verdict |
 |---|---|
-| 1. `npm test` green, `npm run build` clean | **Passed** - 87 tests in 13 files, 44.8 s; `tsc` clean, `vite build` in 809 ms, worker emitted as its own 27.5 kB chunk |
+| 1. `npm test` green, `npm run build` clean | **Passed** - 91 tests in 13 files, 41.7 s; `tsc` clean, `vite build` in 832 ms, worker emitted as its own 27.6 kB chunk |
 | 2. Driven in a real browser | **Passed** - see below |
 | 3. UI responsive while solving | **Passed** - 16.7 ms median frame delta during a flop solve |
 
@@ -370,6 +370,20 @@ flop-sized `VectorCFR` slice would have been 19 ms of hard block per iteration.
 - **The exploitability pass always runs.** It costs a minute on a flop, and
   someone who wanted the strategy and not the number pays for it anyway. It is
   cancellable, and the strategy is on screen before it starts.
+
+### One bug found after the browser run
+
+Worth recording because the browser run did not find it and could not have.
+The chunk sizer divided `elapsedMs` by `iterations` to get a rate; when the
+four-iteration probe finishes inside `Date.now`'s millisecond that rate is
+zero, `CHUNK_MS / 0` is `Infinity`, and `solver.run(Infinity)` is a thread that
+never returns. Four iterations on a short-stack river tree are about 1.6 ms, so
+this is a fast machine away rather than impossible.
+
+The arithmetic moved out of the worker into `nextChunk` in `worker-protocol.ts`
+and is tested there, at rates chosen rather than at whatever rate the machine
+happened to produce - the rate being the input that decides whether it holds.
+Fixed in `49d8d89`, and the app re-driven afterwards.
 
 ### What I would check first next
 
