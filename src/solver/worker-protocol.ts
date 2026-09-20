@@ -36,6 +36,38 @@ export function deserializeBoard(board: string[]): Card[] {
   return board.map(stringToCard)
 }
 
+// How long one chunk of iterations should aim to take. Short enough that the
+// progress bar moves and the elapsed time reported with it is honest; long
+// enough that one postMessage per chunk is noise against the arithmetic.
+export const CHUNK_MS = 150
+
+// Sizing the first chunk is a chicken-and-egg problem - ms/iteration spans a
+// factor of thirty between a river and a flop, so any fixed guess is wrong on
+// one of them. Start with a handful, measure, converge.
+export const PROBE_ITERATIONS = 4
+
+// How many iterations to run next, given what the solve has cost so far.
+//
+// Pure, and exported, because the arithmetic has a hole in it that is invisible
+// by inspection and unreachable in a test that goes through a Worker: when
+// `elapsedMs` is 0 the measured rate is zero, and dividing by it gives a chunk
+// of Infinity, which is `solver.run(Infinity)` and a wedged thread. `Date.now`
+// has millisecond resolution and four iterations on a short-stack river tree
+// are well under a millisecond, so a zero elapsed time is a thing that happens
+// on a fast machine rather than a thing that cannot.
+export function nextChunk(elapsedMs: number, iterations: number, remainingMs: number): number {
+  if (iterations <= 0 || elapsedMs <= 0) return PROBE_ITERATIONS
+
+  const perIteration = elapsedMs / iterations
+  const aimed = Math.round(CHUNK_MS / perIteration)
+  const fits = Math.floor(remainingMs / perIteration)
+
+  // Never below one. A two-second budget on a flop is only about a hundred
+  // iterations, and returning an untouched tree because the next one would
+  // have overrun the budget by 19 ms helps nobody.
+  return Math.max(1, Math.min(aimed, fits))
+}
+
 export interface SolveRequest {
   type: 'solve'
   // Echoed on every reply. The client drops anything from an older solve, so a

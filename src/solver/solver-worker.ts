@@ -8,6 +8,7 @@ import {
   StrategyRow,
   deserializeBoard,
   deserializeRange,
+  nextChunk,
 } from './worker-protocol'
 
 // The solve, off the main thread.
@@ -27,16 +28,6 @@ import {
 const ctx = self as unknown as DedicatedWorkerGlobalScope
 
 const post = (message: SolverResponse) => ctx.postMessage(message)
-
-// How long one chunk of iterations should take. Short enough that the progress
-// bar moves and the reported elapsed time is honest; long enough that the
-// postMessage per chunk is noise against the arithmetic.
-const CHUNK_MS = 150
-
-// Sizing the first chunk is a chicken-and-egg problem: ms/iteration spans a
-// factor of thirty between a river and a flop, so any fixed guess is wrong on
-// one of them. Start with a handful, measure, and let the loop converge.
-const PROBE_ITERATIONS = 4
 
 function rows(strategy: Map<string, number>): StrategyRow[] {
   return Array.from(strategy.entries()).map(([action, frequency]) => ({ action, frequency }))
@@ -59,26 +50,16 @@ function solve(request: SolveRequest): void {
   const budgetMs = seconds * 1000
   const started = Date.now()
   let iterations = 0
-  let chunk = PROBE_ITERATIONS
 
-  // The budget is a promise to someone watching a bar, so a chunk is clamped
-  // to what is left of it rather than allowed to run past the end. It is never
-  // clamped below one iteration: a two-second budget on a flop is only a
-  // hundred of them, and returning an untouched tree because the last one
-  // would have overrun by 19 ms helps nobody.
+  // The budget is a promise to someone watching a bar, so each chunk is sized
+  // from the rate measured so far and clamped to what is left of it rather
+  // than allowed to run past the end. See `nextChunk`.
   while (true) {
     const elapsed = Date.now() - started
     const remaining = budgetMs - elapsed
     if (remaining <= 0) break
 
-    if (iterations > 0) {
-      const perIteration = elapsed / iterations
-      chunk = Math.max(
-        1,
-        Math.min(Math.round(CHUNK_MS / perIteration), Math.floor(remaining / perIteration))
-      )
-    }
-
+    const chunk = nextChunk(elapsed, iterations, remaining)
     solver.run(chunk)
     iterations += chunk
 
