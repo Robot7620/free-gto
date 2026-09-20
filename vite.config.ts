@@ -9,5 +9,8 @@ export default defineConfig({
     // those on duration alone, which reads as a broken suite rather than a slow
     // one.
     testTimeout: 120_000,
+    // bench/ holds measurements, not tests: they assert nothing and take tens
+    // of minutes. `npm run bench` runs them against their own config.
+    include: ['src/**/*.test.ts'],
   },
 })
