@@ -3,10 +3,16 @@ import { Card } from '../engine/cards'
 // Which kind of card just fell.
 //
 // The public tree records the street but not the card, so at K=1 the solver
-// plays a flush-completing turn exactly like a brick. Measured on a turn, that
-// costs 14.4% of pot on a rainbow board and 17.8% on a two-tone one, and it
-// does not move with more compute, because it is the abstraction and not the
-// sampling. K=4 takes those to 12.0% on both. See TODO.md for the table.
+// plays a flush-completing turn exactly like a brick. Measured at convergence
+// that costs 14.4% of pot on a rainbow turn and 17.8% on a two-tone one, 38.6%
+// and 51.5% on the corresponding flops, and none of those move with more
+// compute - flat from 8k iterations to 80k - because it is the abstraction and
+// not the sampling. K=4 takes them to 12.0/12.1% and 33.3/32.9%.
+//
+// The two-tone columns are the ones to read. K=1 is 3.4 points worse on a
+// two-tone turn than a rainbow one and 12.9 worse on a two-tone flop, for
+// nothing but a suit it cannot see; K=4 lands within half a point of itself on
+// both. That is what these classes are for. See TODO.md for the tables.
 //
 // Classing the runout buys back the distinction the tree is missing without
 // paying for all 47 cards: the chance node gets one successor per class instead
@@ -14,8 +20,15 @@ import { Card } from '../engine/cards'
 // classes cost is memory and samples-per-slot, not time - a traversal still
 // visits exactly one successor per chance node, whatever K is.
 //
+// Samples-per-slot is the real cost and it is worth being concrete about:
+// dividing the updates means K=4 starts BEHIND K=1 and crosses it at roughly
+// 2,000-4,000 turn iterations and 5,000 flop ones. Four is still the default
+// because K=1's number is a floor and K=4's deficit is a queue. See
+// DEFAULT_RUNOUT_CLASSES in vector-cfr.ts for that argument in full.
+//
 // K=8 was measured too and buys nothing over K=4 at the same iteration count,
-// for four times the memory on a flop. Four is the default for that reason.
+// for four times the memory on a flop - where it would also meet four times
+// the dilution. Rejected on measurement, not left untried.
 //
 // The scheme is deliberately about the card's *relationship to the board*, not
 // its face value. An offsuit 7 is a brick on one board and the card that pairs

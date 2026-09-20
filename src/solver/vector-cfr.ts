@@ -30,17 +30,42 @@ import { Rng, makeRng } from './rng'
 
 // K=4: pair / flush / overcard / brick.
 //
-// Measured against K=1 on the same seed and the same iteration count, this
-// takes turn exploitability from 14.4% of pot to 12.0% on a rainbow board and
-// from 17.8% to 12.1% on a two-tone one - the bigger gain being on the board
-// where the flush class is reachable at all, which is the mechanism showing up
-// where it should. K=8 lands on the same place as K=4 for four times the flop
-// memory. The river, having no runout, does not move at any K.
+// Measured against K=1 on the same seed and the same iteration counts, at
+// convergence, exploitability as a share of pot:
 //
-// Note that the improvement is only visible on exploitability() and not on
-// clairvoyantExploitability(), where K=4 reads slightly WORSE. See that
-// method's comment; a best response that is handed the whole runout up front
-// collects a rent no strategy can lower, and it swamps the difference.
+//              rainbow K=1  rainbow K=4   two-tone K=1  two-tone K=4
+//   turn  20k     14.4%        12.0%         17.8%         12.1%
+//   flop  80k     38.6%        33.3%         51.5%         32.9%
+//
+// The river, having no runout, does not move at any K at all.
+//
+// Read the K=1 columns against each other rather than the rows: K=1 is 3.4
+// points worse on a two-tone turn than a rainbow one and 12.9 worse on a
+// two-tone flop, for nothing but a suit it cannot see, while K=4 lands within
+// half a point of itself on both. What classing buys is not a better average,
+// it is the removal of a blindness - and it is largest on a flop, where there
+// are two runout cards to be blind to.
+//
+// THE CATCH, and the reason this is not free: classes divide the updates as
+// well as the strategy, so K=4 starts behind and crosses K=1 at roughly 2,000
+// to 4,000 turn iterations and 5,000 flop ones. Below that K=1 is genuinely
+// better - at 400 flop iterations, which is what the app's default ten-second
+// budget buys, K=4 reads 105% against K=1's 58%. Four is still the default
+// because K=1 is FLAT from 8k to 80k on both boards and both streets: it is a
+// floor no budget escapes, where K=4's deficit is a queue and the UI hands the
+// user the control that shortens one. Neither number is a usable strategy at
+// 400 iterations anyway.
+//
+// K=8 was measured on a turn, bought nothing over K=4, and would meet four
+// times the dilution on a flop for 234.6 MiB. Rejected, not untried.
+//
+// On clairvoyantExploitability() K=4 reads WORSE on three of these four
+// boards, and that is an artifact of the instrument rather than a
+// disagreement. The rent clairvoyance collects rises with K - more classes
+// give a best response that already knows the next card more to do with
+// knowing it - by 6.7 points on a rainbow flop and 10.5 on a two-tone one,
+// which is the same order as the improvement being measured. See that
+// method's comment.
 //
 // Annotated `number` rather than left to infer `4`: it is a default that is
 // expected to be changed, and a literal type makes anything that branches on
@@ -967,6 +992,24 @@ export class VectorCFR {
   // therefore an upper bound on exploitability rather than exploitability, and
   // the part of it that comes from clairvoyance is a floor no strategy can
   // lower, however finely the runout is classed.
+  //
+  // DO NOT USE IT TO COMPARE TWO VALUES OF K. Subtracting this from
+  // exploitability() on the same solve gives the rent clairvoyance collects,
+  // and measured on a flop at four checkpoints spanning 2,000 to 80,000
+  // iterations it comes out:
+  //
+  //                 K=1     K=4
+  //     rainbow    ~17.0   ~23.7
+  //     two-tone   ~17.8   ~28.3
+  //
+  // Near-constant in iterations - that is what "a floor no strategy can lower"
+  // means - and markedly higher at K=4. The mechanism is straightforward once
+  // stated: more classes give the best response more to do with the card it
+  // should not know about, because it can take a different line in each class
+  // subtree. So refining the abstraction raises the fee this function charges
+  // for it, and the fee is the same order as the improvement. It reported K=4
+  // as worse than K=1 on the turn and on the rainbow flop for exactly that
+  // reason, while exploitability() has K=4 ahead on both.
   //
   // On a river the two agree exactly, there being no undealt card to be
   // clairvoyant about. That is what pins them against each other.
