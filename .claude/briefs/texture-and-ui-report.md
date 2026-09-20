@@ -26,6 +26,13 @@ rises with the number of chance nodes - which is exactly the pattern phase 5
 read as blindness compounding per street. I fixed it, pinned the fix against an
 independent reference, and re-measured.
 
+**On the corrected instrument the verdict reverses on the turn.** K=4 beats
+K=1 at every checkpoint on both boards - 14.4% to 12.0% on a rainbow turn,
+17.8% to 11.9% on a two-tone one - with the larger gain on the board where the
+flush class is reachable at all. Both curves are flat from 20k to 80k, so this
+is not sample starvation either way. The flop, where the trade is 65 MiB
+against 10 MiB, is part 2 of the overnight brief below.
+
 ## What landed, commit by commit
 
 | commit | what |
@@ -134,7 +141,43 @@ and K=4.
 
 ### Gate 3 on the corrected instrument
 
-<!-- PENDING -->
+Same seed, same iteration counts, same solver. Only the instrument changed, and
+the verdict reverses: **K=4 beats K=1 on the turn on every board and at every
+checkpoint.** `exploitability()` enumerates the runout inside the walk at every
+depth, so every number here is exact and none of it is sampled.
+
+| iterations | rainbow K=1 | rainbow K=4 | two-tone K=1 | two-tone K=4 |
+|---|---|---|---|---|
+| 8,000 | 14.569% | **12.581%** | 18.169% | **13.492%** |
+| 20,000 | 14.403% | **12.035%** | 17.818% | **12.056%** |
+| 80,000 | 14.575% | **12.040%** | 18.245% | **11.874%** |
+
+Three things in that table, and the second is the one worth the branch.
+
+**Both curves are flat from 20k to 80k.** K=4 is not starved on a turn - it has
+converged by 20,000 iterations and four times the compute moves it by two
+hundredths of a point. The sample-dilution suspicion, which was the leading
+explanation for the negative result, is ruled out here. Whatever K=4 is worth
+on a turn, it is worth it at 20k.
+
+**The gain is where the mechanism is.** On the rainbow board K=4 saves 2.4
+points, 16% of the number. On the two-tone board it saves 5.9 points, 33%. A
+rainbow turn has no suit with two cards on it, so no river card can fall in the
+flush class and K=4 is really K=3 - the mechanism the whole idea rests on
+cannot occur there. Where it can occur, the gain nearly doubles. That is not a
+number moving; that is the stated mechanism showing up in the one place it was
+predicted to and not in the other.
+
+**K=1 is punished by texture and K=4 is not.** Read the K=1 column down the two
+boards: 14.4% rainbow against 17.8% two-tone. The same solver, the same
+iterations, 3.4 points worse purely because the board has a flush draw it
+cannot see. K=4 lands at 12.0% and 11.9% - the same number on both. Classing
+the runout does not just improve the average, it removes the penalty that board
+texture imposes on a solver blind to it, which is exactly what it was for.
+
+For contrast with the clairvoyant table above, where K=4 read *worse* on the
+turn at every checkpoint: nothing about the solve changed between these two
+tables. Only what the best response was allowed to know.
 
 ## Gates
 
@@ -142,7 +185,7 @@ and K=4.
 |---|---|
 | 1. `npm test` green, `npm run build` clean | **Passed** - 84 tests in 12 files, 40.2 s; `tsc` clean, `vite build` in 709 ms |
 | 2. River unchanged | **Passed**, in the sharpest form available |
-| 3. Turn and flop measurably improve | <!-- PENDING --> |
+| 3. Turn and flop measurably improve | **Turn passes** on the corrected instrument - 14.4% -> 12.0% rainbow, 17.8% -> 11.9% two-tone. **Fails on the clairvoyant one**, which is the instrument the gate was written against. The flop is part 2. |
 | 4. Flop memory under ~500 MB | **Passed** - 65.1 MiB of arrays at K=4, 234.6 MiB at K=8 |
 | 5. K=8 measured and reported, not adopted blindly | **Passed** - measured, and not adopted |
 

@@ -1,6 +1,6 @@
 # TODO
 
-## Current state (2026-09-19)
+## Current state (2026-09-20)
 
 Working through a plan to fix flop convergence by switching to **vectorized
 exact-hand CFR** — the architecture real solvers use: abstract the betting tree,
@@ -84,14 +84,61 @@ Two things were harder than the plan implied, both now covered by tests:
   matches back to uniform — so it has to be tested on the regrets.
 
 The old bucketed sampler in `cfr.ts` / `infoset.ts` is deliberately still here,
-so the two can be compared. Removing it is a separate step.
+so the two can be compared. Nothing on the page imports it any more; removing
+it is a separate step.
 
-Then phases 5–6: Nash distance, and the Web Worker + UI.
+**Phases 5–6 done**, on the `texture-classes` branch: exploitability at each
+street (and the correction to how it was being measured — see below), runout
+texture classes, and the Web Worker + UI. The app runs `VectorCFR` in a worker
+on a time budget and displays the exploitability of what it solved. Full
+write-up in `.claude/briefs/texture-and-ui-report.md`.
 
-### What K=1 actually costs: measured, and it is a lot
+### What K=1 costs: corrected 2026-09-20
 
-Phase 5's exploitability number was pointed at each street. The river converges;
-the turn and flop hit a floor and stay there.
+**The 20.50% / 56.01% figures previously published in this section were
+measured with a clairvoyant best response and are wrong as a statement about
+the runout abstraction.** They are kept below, relabelled, because they are
+reproducible and because the reasoning built on them needs to be readable
+against what it was actually looking at.
+
+What was wrong: `exploitability()` fixed a runout at the root, walked the tree
+taking hero's maximum at every node with that runout already loaded, and
+averaged afterwards. That is the average of the maxima, not the maximum of the
+average - hero's turn decision was being made knowing the river card. A best
+response is entitled to every card that is face up when it acts. It is not
+entitled to one still in the deck.
+
+It matters because clairvoyance is worth something whatever the strategy does,
+so it puts a floor under the number that no amount of solving can lower - and
+that floor rises with the count of chance nodes. Which is exactly the shape
+this section read as blindness compounding per blind street.
+
+`exploitability()` now averages the runout inside the walk. The old
+computation survives as `clairvoyantExploitability()`, named for what it
+measures. The two agree to 12 decimals on a river, there being no undealt card
+to know about, and the corrected one is pinned on a turn against an
+independent reference that does the card-removal arithmetic in the form it is
+defined in rather than the form the solver computes it in.
+
+#### The corrected numbers
+
+Board `Ks 9h 4c 2d` rainbow and `Ks 9s 4c 2d` two-tone, seed 12345, exact over
+every runout - `exploitability()` enumerates rather than samples at every
+depth, so none of this is estimated.
+
+| iterations | rainbow K=1 | rainbow K=4 | two-tone K=1 | two-tone K=4 |
+|---|---|---|---|---|
+| 8,000 | 14.569% | **12.581%** | 18.169% | **13.492%** |
+| 20,000 | 14.403% | **12.035%** | 17.818% | **12.056%** |
+| 80,000 | 14.575% | **12.040%** | 18.245% | **11.874%** |
+
+A river, for reference, converges to 0.221% at 20k and is identical at every K
+to every digit printed, having no runout to class.
+
+#### The figures as previously published, relabelled
+
+These are `clairvoyantExploitability()`. Reproducible, and not a measurement of
+the runout abstraction:
 
 | iterations | river | turn | flop |
 |---|---|---|---|
@@ -99,48 +146,68 @@ the turn and flop hit a floor and stay there.
 | ~8-20k  | 0.22% | 20.68% | 54.04% |
 | 20-60k  | **0.10%** | **20.50%** | **56.01%** |
 
-Fifteen times the compute buys the turn 0.8 points and the flop nothing - the
-flop figure bounces inside its own sampling noise. This is not under-training.
+The re-run harness reproduces the turn figure - 20.682% at 20k, K=1 - so the
+published number was right about what it measured. The reading of it was
+wrong. "The turn is blind to one card and costs ~20%, the flop is blind to two
+and costs ~55%, compounding per blind street" is equally consistent with
+clairvoyance rent compounding per chance node, and that reading additionally
+explains why fifteen times the compute never moved it.
 
-The floor is the abstraction, and its shape says so: the turn is blind to one
-card and costs ~20%, the flop is blind to two and costs ~55%. It compounds per
-blind street. The river has no runout to be blind to, which is exactly why it
-converges to a real number.
+#### What actually follows
 
-Nor is the best response cheating. It sees which card fell, but so does any
-opponent - the board is public. A strategy that cannot tell a flush-completing
-turn from a brick calls the same facing a bet on either, and someone betting
-only the scary card collects the difference.
+- **River solves are trustworthy.** 0.22% at 20k, and untouched by K.
+- **Turn solves are usable, not marginal.** 12% at K=4, not 20%.
+- **Flop solves are the expensive case**, and the corrected flop number is in
+  `.claude/briefs/texture-and-ui-report.md` under part 2.
+- **Texture classes help, and mainly where a flush is possible.** The claim
+  this section previously made - that classing the runout is what makes a flop
+  solve worth displaying at all - rested on the inflated figures and does not
+  survive them. On the corrected instrument K=4 saves 2.4 points of 14.4 on a
+  rainbow turn and 5.9 points of 17.8 on a two-tone one. Real, worth having,
+  and a third of the way to what was claimed. The larger gain landing on the
+  board where a flush can complete is the mechanism showing up where it should.
+- **K=1's penalty is a texture penalty.** K=1 reads 14.4% on a rainbow turn and
+  17.8% on a two-tone one - 3.4 points worse for nothing but a flush draw it
+  cannot see. K=4 reads 12.0% and 11.9%, the same on both. That, rather than
+  the average improving, is the thing classing buys.
+- **It is not a sampling question.** Both curves are flat from 20k to 80k on
+  both boards.
 
-**What follows from this.** River solves are trustworthy at 0.10%. Turn solves
-are marginal. Flop solves - the main thing anyone would want - are about half a
-pot exploitable and no amount of iterations will fix them. Texture classes
-therefore are not a nice-to-have after the UI; they are what makes a flop solve
-worth displaying. And they can now be judged, because exploitability will say
-whether K=4 or K=8 actually buys anything.
+### The runout abstraction: was K=1, now classed
 
-### The runout abstraction is still K=1, and that is the live limitation
+Regrets are keyed on `(public tree node, holding)`. The public tree node used to
+record the street but **not which card fell**, which is what made a chance node
+have a single structural successor and the whole flop tree 3,957 nodes: turn
+and river strategies were averaged across every runout, and the solver could
+not play a turned flush card differently from a turned brick.
 
-Regrets are keyed on `(public tree node, holding)`. The public tree node records
-the street but **not which card fell** — that's what makes a chance node have a
-single structural successor and the whole tree 3,957 nodes. So turn and river
-strategies are averaged across every runout: the solver cannot play a turned
-flush card differently from a turned brick.
+**Built on the `texture-classes` branch.** A chance node now gets `classCount`
+structurally identical copies of the rest of the tree and the dealt card routes
+to the copy for its class. `runoutClass(card, board, K)` in `runout-class.ts`
+sorts a card by what it does to *the board it lands on* rather than by its face
+value - an offsuit 7 is a brick on one board and the card that pairs the turn
+on another.
 
-Sizing, for whoever picks this up. K=1 is measured here; the rest are the
-plan's estimates and have not been checked against a build:
+Sizing, now measured against a build rather than estimated. The estimates that
+stood here were about 2x low on nodes, because a flop has two chance levels: the
+turn is copied K times and the river K*K.
 
-| runout classes | flop pools |
-|---|---|
-| K=1 (today, 3,957 nodes) | 10 MiB, measured |
-| K=4 | ~45 MB, estimated |
-| K=8 | ~175 MB, estimated |
-| exact (K=47, ~3.1M nodes) | ~5.9 GB, estimated |
+| runout classes | flop nodes | flop arrays |
+|---|---|---|
+| K=1 | 3,957 | 10.3 MiB |
+| K=4 | 51,111 | 65.1 MiB |
+| K=8 | 197,171 | 234.6 MiB |
+| exact (K=47) | ~3.1M, estimated | ~5.9 GB, estimated |
 
-Exact runouts are the honest reason a perfect-recall flop solve is not a browser
-computation. Texture classes at K=4–8 are affordable and are the natural next
-piece of work — but **sequence them after phase 5**, because exploitability is
-what measures whether the extra classes bought anything.
+**Classes cost memory and samples-per-slot, never time.** A single deal visits
+exactly one successor per chance node, so a traversal touches the same node
+count whatever K is: 19.1, 19.0 and 18.8 ms per flop iteration at K=1, 4 and 8.
+This was not predicted and it is the most reusable fact on the branch - it is
+why the UI can offer a time budget without knowing how the runout is classed.
+There is a test pinning it.
+
+Exact runouts remain the honest reason a perfect-recall flop solve is not a
+browser computation.
 
 Two consequences worth holding on to:
 
@@ -305,8 +372,12 @@ Next steps, in the order worth trying:
 ## 1. Show per-hand strategy in the range grid (priority)
 
 The solver computes a distinct strategy for every holding, but the UI only shows
-the single range-wide aggregate in `StrategyTable`. `CFRSolver.getRangeStrategy()`
-accepts any `Range`, so a one-combo range returns that hand's own strategy.
+the single range-wide aggregate in `StrategyTable`. The per-hand data is already
+there and does not need a re-solve: `VectorCFR.averageStrategy(node, hand)`
+returns one holding's distribution, `handsInClasses(player, ['AKs'])` maps a
+grid cell to its holdings, and `aggregateStrategy(node, classes)` is the
+weighted roll-up the panels already use. The worker would need to send a
+per-hand table back alongside the two aggregates.
 
 - Color each `RangeGrid` cell by its action frequency (e.g. bet vs check) after a
   solve, instead of only by its weight in the range
@@ -330,22 +401,36 @@ left is the finer-grained range work:
 
 ## Known limitations (not bugs)
 
-- Single street only — the tree goes to showdown when betting closes, with no
-  turn/river dealt. Adding a turn card changes the board the hands are evaluated
-  against, but the solver still treats it as one betting round.
+- Single street only in `cfr.ts`, the old sampler — the tree goes to showdown
+  when betting closes, with no turn/river dealt. `vector-cfr.ts`, which the app
+  now runs, plays through to the river.
 - Betting is capped at 3 bets/raises per street (`MAX_AGGRESSIVE_ACTIONS`)
 - Chance-sampled CFR, so results move slightly run to run; more iterations
   tighten them. `vector-cfr.ts` is seeded, so a given seed does reproduce
   exactly
-- **Runouts are abstracted at K=1** in `vector-cfr.ts`: turn and river
-  strategies are averaged over which card fell, because the public tree node
-  doesn't record it. See "The runout abstraction is still K=1" above — this is
-  the largest remaining source of error and it is deliberate, not an oversight
-- Only the BTN (in position) strategy is displayed; the BB strategy is solved but
-  never surfaced
+- **Runouts are abstracted into texture classes** in `vector-cfr.ts` — see the
+  section above. The solver can tell a flush-completing card from a brick, but
+  not two bricks from each other. This is the largest remaining source of error
+  on turn and flop solves and it is deliberate, not an oversight
+- A flop solve is expensive and the app is honest rather than good about it: a
+  ten-second budget is ~416 iterations and lands around 105% of pot, badged
+  "indicative only". River solves converge inside the same budget
 
 ## Done
 
 - ~~Editable scenario~~ — board (flop/turn/river via card picker), effective
   stack, starting pot, and range membership are all editable; the solved strategy
   clears whenever the spot changes
+- ~~Runout texture classes~~ — a chance node gets one successor per class and
+  the dealt card routes to its own subtree. Costs memory and samples-per-slot,
+  never time. See "The runout abstraction" above
+- ~~The exploitability instrument~~ — the best response no longer sees cards
+  that have not been dealt. `clairvoyantExploitability()` keeps the old
+  computation under a name that says what it does
+- ~~The app runs the vectorized solver, in a Web Worker, on a time budget~~ —
+  `useSolver.ts` and `solver-worker.ts`. Seconds rather than iterations,
+  because an iteration is ~0.6 ms on a river and ~19 ms on a flop. The page
+  holds 60 fps through a flop solve
+- ~~Exploitability shown beside the strategy~~ — labelled as exploitability
+  within the abstraction, not a Nash distance, and posted after the strategy
+  because an exact flop pass takes about a minute

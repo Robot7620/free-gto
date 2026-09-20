@@ -31,6 +31,12 @@ const BOARDS: Record<string, string[]> = {
 
 const CHECKPOINTS = [8000, 20000, 80000]
 
+// Everything printed below is exact. exploitability() enumerates the runout
+// inside the walk at every depth and has no sampling path at all, so unlike
+// clairvoyantExploitability() it has no exactness flag to report - it used to
+// print one anyway, reading `exact=undefined`, which looked like a number that
+// might have been sampled.
+
 describe('turn diagnostic', () => {
   it('rainbow vs two-tone, K=1 vs K=4, out to 80k', () => {
     for (const [name, cards] of Object.entries(BOARDS)) {
@@ -51,7 +57,7 @@ describe('turn diagnostic', () => {
           const e = solver.exploitability()
           console.log(
             `DIAG ${name} K=${k} iters=${done} expl=${e.percentOfPot.toFixed(3)}% ` +
-              `exact=${e.exact} slots=${solver.slotCount}`
+              `slots=${solver.slotCount}`
           )
         }
       }
