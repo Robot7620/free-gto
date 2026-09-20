@@ -30,8 +30,17 @@ independent reference, and re-measured.
 K=1 at every checkpoint on both boards - 14.4% to 12.0% on a rainbow turn,
 17.8% to 11.9% on a two-tone one - with the larger gain on the board where the
 flush class is reachable at all. Both curves are flat from 20k to 80k, so this
-is not sample starvation either way. The flop, where the trade is 65 MiB
-against 10 MiB, is part 2 of the overnight brief below.
+is not sample starvation either way.
+
+**And on the flop it reverses harder.** Measured overnight: K=1 stops dead at
+38.6% rainbow and 51.5% two-tone and ten times the compute moves neither, while
+K=4 crosses below it around 5,000 iterations and reaches 33.3% and 32.9%, still
+falling at 80,000. On a two-tone flop that is an 18.6 point gap. The whole
+original paradox has a quantitative explanation as well: the rent clairvoyance
+collects is flat in iterations but *rises with K*, by 6.7 points on the rainbow
+board and 10.5 on the two-tone one, so the instrument the gate was written
+against charges a better abstraction a fee of the same order as its
+improvement. See part 2.
 
 ## What landed, commit by commit
 
@@ -517,3 +526,168 @@ same board and reports 105.054%. Two independent harnesses - one a Web Worker
 driving `exploitability()` through the UI, one a node bench calling it
 directly - landing within half a point at a matching iteration count. That is
 a check on the whole path the displayed number takes, not just on the solver.
+
+### The flop, measured
+
+`bench/flop-decision.test.ts`, seed 12345, `Ks 9h 4c` and `Ks 9s 4c`, 100bb,
+10bb pot. Ran 07:47 to 09:51 UTC.
+
+**Exact, not sampled, and both instruments are exact.** `exploitability()`
+enumerates the runout inside the walk at every depth and has no sampling path.
+`clairvoyantExploitability()` enumerates all 2,352 ordered flop runouts, under
+its 4,096 limit, and reported `clairvoyantExact=true` on all sixteen rows. No
+estimate appears anywhere below.
+
+Honest exploitability, % of pot, with the 400 and 1,600 rows from the
+app-regime bench:
+
+| iterations | rainbow K=1 | rainbow K=4 | two-tone K=1 | two-tone K=4 |
+|---|---|---|---|---|
+| 400 | **57.581%** | 105.054% | **65.656%** | 122.602% |
+| 1,600 | **41.673%** | 53.859% | **51.821%** | 60.381% |
+| 2,000 | **40.550%** | 49.213% | **51.383%** | 55.568% |
+| 8,000 | 38.367% | **36.932%** | 50.981% | **38.344%** |
+| 20,000 | 38.291% | **34.485%** | 50.792% | **34.798%** |
+| 80,000 | 38.568% | **33.299%** | 51.473% | **32.862%** |
+
+Per-iteration cost held flat in K across the whole run: 17.8-18.4 ms at both
+K=1 and K=4, on 3,957 nodes and on 51,111. Equal iterations is equal wall
+clock, so the table is also a fair comparison at fixed time.
+
+**K=1 hits a floor and stops.** 38.4% / 38.3% / 38.6% on the rainbow board at
+8k, 20k and 80k; 51.0% / 50.8% / 51.5% on the two-tone one. Ten times the
+compute buys nothing at all. That is the abstraction, not the sampling, and it
+is the same shape the original K=1 measurement found - correctly, as it turns
+out, just at the wrong magnitude.
+
+**K=4 crosses it between 2,000 and 8,000 iterations and keeps going.** It is
+still falling at 80,000 (34.485 -> 33.299 rainbow), so it has not converged
+where K=1 converged long ago.
+
+**On a two-tone flop the gap is 18.6 points.** 51.473% against 32.862%. This
+is the largest effect measured anywhere on the branch.
+
+**And, again, K=1's penalty is a texture penalty.** K=1 reads 38.6% on the
+rainbow flop and 51.5% on the two-tone one: 12.9 points worse for nothing but
+a suit it cannot see. K=4 reads 33.3% and 32.9% - a difference of 0.4 points.
+Classing does not improve an average so much as remove a blindness. Same
+finding as the turn, three times the size.
+
+### Why the clairvoyant instrument said the opposite
+
+The clairvoyant column was recorded alongside, and subtracting one from the
+other explains the whole original paradox. The gap is the rent clairvoyance
+collects - the part of the number that comes from the best response knowing a
+card still in the deck:
+
+| | 2,000 | 8,000 | 20,000 | 80,000 |
+|---|---|---|---|---|
+| rainbow K=1 | 16.80 | 16.57 | 17.01 | 16.97 |
+| rainbow K=4 | 24.20 | 23.32 | 23.35 | 23.70 |
+| two-tone K=1 | 19.05 | 18.27 | 18.10 | 17.83 |
+| two-tone K=4 | 27.80 | 27.86 | 27.71 | 28.34 |
+
+**The rent is flat in iterations and rises with K.** It barely moves across a
+forty-fold change in compute - which is what "a floor no strategy can lower"
+means - and it is 6.7 points higher at K=4 than K=1 on the rainbow board, 10.5
+higher on the two-tone one.
+
+That is not a coincidence, and it is the mechanism: more classes give the
+clairvoyant best response *more* to do with its illegal knowledge, because it
+can pick a different line in each class subtree knowing which card is coming.
+Refining the abstraction raises the rent it collects.
+
+So the instrument the gate was written against charges K=4 a fee for being a
+better abstraction, and the fee is the same order as the improvement. On the
+rainbow board the honest gain is 5.3 points and the extra rent 6.7, so the
+clairvoyant number reads K=4 as *worse*. On the two-tone board the honest gain
+is 18.6 and the extra rent 10.5, so even the clairvoyant number reads K=4 as
+better - the effect is simply too big to hide.
+
+The original K=8 result falls out of the same arithmetic without needing a
+separate explanation.
+
+For continuity: clairvoyant K=1 on a flop at 20,000 iterations is 55.303%,
+against the 56.01% published in `TODO.md`. The harness reproduces the old flop
+figure as well as the old turn one, so the disagreement was never about the
+measurement being run wrong.
+
+## The verdict: `DEFAULT_RUNOUT_CLASSES` stays 4
+
+**No code change.** The brief said to change it if the evidence says so, and
+the evidence says keep it. The reasoning, since the verdict alone is not the
+useful part:
+
+**1. K=1's cost is permanent and K=4's is temporary.** K=1 is flat from 8,000
+to 80,000 iterations on both boards and both streets. Nothing a user can do -
+no budget, no faster machine - moves it off 38.6% and 51.5%. K=4 starts worse
+and is still improving at 80,000. One of those is a floor and the other is a
+queue, and the app now hands the user the control that shortens a queue.
+
+**2. The gain at convergence is large, and largest where it was predicted.**
+5.3 points on a rainbow flop, 18.6 on a two-tone one, 2.4 and 5.9 on the
+corresponding turns. The ordering - bigger where a flush can complete, bigger
+on a flop than a turn - is the mechanism the scheme was designed around
+showing up in the measurement, not a number that happened to move.
+
+**3. It removes the texture penalty rather than averaging it away.** K=1 is
+12.9 points worse on a two-tone flop than a rainbow one; K=4 is 0.4. A solver
+whose error depends on whether the board has a flush draw is wrong in a way
+that a user cannot correct for, because it is wrong precisely where they most
+need it to be right.
+
+**4. It costs nothing per iteration.** 17.8-18.4 ms at both K on a flop,
+across the entire sweep. The trade is 65.1 MiB against 10.3 MiB, which gate 4
+already cleared and which a Web Worker holds without noticing.
+
+**5. K=8 remains rejected.** Measured on a turn, where it bought nothing over
+K=4, and at 234.6 MiB and 197,171 flop nodes it would face four times K=4's
+dilution to earn back a smaller refinement.
+
+### The honest qualification
+
+**Below the crossover K=4 is worse, and the app's default budget is below the
+crossover on a flop.** Ten seconds is ~420 flop iterations, where K=4 reads
+105% against K=1's 58%. That is a real cost of this decision and it should not
+be buried.
+
+It does not change the verdict, for one reason: at 420 iterations *neither* is
+a strategy. 58% of pot is not usable and 105% is not usable, the badge calls
+both "indicative only", and choosing the default to optimise a regime where
+the answer is worthless would be optimising the wrong thing. On a turn, where
+ten seconds buys ~2,100 iterations, the two are within a point either way and
+twenty seconds puts K=4 clearly ahead.
+
+### The finding underneath all of this
+
+**A flop solve in this app is not usable at any budget a person will wait
+for.** 33% of pot after 80,000 iterations - twenty-five minutes of solving
+plus a minute of measuring it. That is the best number on this branch and the
+badge still reads "indicative only", correctly.
+
+This is not an argument against texture classes; K=4 is the reason it is 33%
+and not 51%. It is a statement about where the remaining error lives, and
+after tonight it is no longer the runout abstraction that dominates on a
+flop - K=4 has taken that from 51% to 33% and is still falling. What is left
+is the betting abstraction, the iteration count, or both, and neither was
+measured here.
+
+### What I would check first next
+
+1. **Where K=4 actually converges on a flop.** It is still falling at 80,000.
+   The number that matters for "is a flop solve ever worth displaying" is the
+   asymptote, and nothing here has found it.
+2. **Whether the budget should be street-aware.** A river converges in ten
+   seconds; a flop needs about a hundred to reach the crossover and far more
+   to be useful. I left the default at ten seconds throughout rather than pick
+   new numbers, because the measurement says a flop is not usable at any of
+   the candidates and a longer default would imply otherwise. This is a design
+   decision the brief does not cover and I am flagging rather than making it.
+3. **Unreachable classes.** Still open from task A, and now better motivated:
+   on a rainbow flop no turn card can be in the flush class, so a quarter of
+   the turn subtrees are allocated, never touched, and - the part that matters
+   more than the memory - dilute nothing while contributing nothing. Skipping
+   them would move the rainbow crossover earlier.
+4. **K=6 or a different split.** K=4's win is concentrated in the flush class.
+   Nothing here tests whether overcard/brick earns its keep, and dropping a
+   class that does not would cut both memory and dilution.

@@ -157,8 +157,27 @@ explains why fifteen times the compute never moved it.
 
 - **River solves are trustworthy.** 0.22% at 20k, and untouched by K.
 - **Turn solves are usable, not marginal.** 12% at K=4, not 20%.
-- **Flop solves are the expensive case**, and the corrected flop number is in
-  `.claude/briefs/texture-and-ui-report.md` under part 2.
+- **Flop solves are the expensive case.** Corrected, exact over all 2,352
+  ordered runouts:
+
+  | iterations | rainbow K=1 | rainbow K=4 | two-tone K=1 | two-tone K=4 |
+  |---|---|---|---|---|
+  | 2,000 | **40.550%** | 49.213% | **51.383%** | 55.568% |
+  | 8,000 | 38.367% | **36.932%** | 50.981% | **38.344%** |
+  | 20,000 | 38.291% | **34.485%** | 50.792% | **34.798%** |
+  | 80,000 | 38.568% | **33.299%** | 51.473% | **32.862%** |
+
+  K=1 is flat from 8k to 80k - that is its floor and compute will not move it.
+  K=4 crosses it around 5,000 iterations and is still falling at 80,000. Not
+  56% at either K, and the old 56.01% is reproduced by the clairvoyant
+  instrument at 55.303%.
+
+- **A flop solve is still not usable at any budget a person will wait for.**
+  33% of pot after 80,000 iterations, which is twenty-five minutes. After
+  tonight the dominant error on a flop is no longer the runout abstraction -
+  K=4 took that from 51% to 33% and it has not bottomed out. What remains is
+  the betting abstraction, the iteration count, or both, and neither has been
+  measured.
 - **Texture classes help, and mainly where a flush is possible.** The claim
   this section previously made - that classing the runout is what makes a flop
   solve worth displaying at all - rested on the inflated figures and does not
@@ -170,8 +189,19 @@ explains why fifteen times the compute never moved it.
   17.8% on a two-tone one - 3.4 points worse for nothing but a flush draw it
   cannot see. K=4 reads 12.0% and 11.9%, the same on both. That, rather than
   the average improving, is the thing classing buys.
-- **It is not a sampling question.** Both curves are flat from 20k to 80k on
-  both boards.
+- **It is not a sampling question at convergence, and it is entirely a
+  sampling question below it.** The turn curves are flat from 20k to 80k on
+  both boards. But K=4 divides the updates as well as the strategy, so it
+  starts behind and crosses K=1 at roughly 2,000-4,000 turn iterations and
+  5,000 flop ones. Below the crossover K=1 is genuinely better; above it, K=1
+  has stopped improving and K=4 has not.
+- **The clairvoyance rent rises with K**, which is why the old instrument
+  reported the opposite. More classes give a best response that can see the
+  next card more to do with knowing it, so refining the abstraction raises the
+  fee the clairvoyant measurement charges: 17.0 points at K=1 against 23.7 at
+  K=4 on a rainbow flop, 17.8 against 28.3 on a two-tone one, and near-constant
+  across a forty-fold change in compute. The fee is the same order as the
+  improvement, so it inverted the verdict wherever the improvement was small.
 
 ### The runout abstraction: was K=1, now classed
 
