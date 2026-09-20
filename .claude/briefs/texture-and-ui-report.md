@@ -373,6 +373,12 @@ would. Every number below is from that run.
 Screenshots taken at the initial load, mid-measure, flop done, river done,
 range edited and after reset.
 
+Driven again against `vite preview` on the production bundle, not only the dev
+server, since a worker loaded through `new URL(..., import.meta.url)` is one of
+the things that can work under dev's module graph and not after bundling. It
+loads from its own emitted chunk and solves: 4,407 iterations in 3.0 s on a
+river, 0.65% of pot, no console errors.
+
 ### Gate 3, in detail
 
 This is the one the worker exists for, so it was measured rather than asserted.
