@@ -1,181 +1,87 @@
 # Free GTO Poker Trainer
 
-A free, open-source alternative to commercial GTO poker solvers like PioSOLVER and GTO+. Built with React, TypeScript, and a custom CFR (Counterfactual Regret Minimization) solver.
+An open-source postflop solver for heads-up No Limit Hold'em, in the browser.
+React, TypeScript, and a vectorized CFR solver written from scratch.
 
-## 🎯 Features
+## What it does
 
-### Current MVP (v0.1.0)
-- ✅ **Poker Engine**
-  - 7-card hand evaluator
-  - Monte Carlo equity calculator
-  - Range representation and operations (169 hand combos)
-  
-- ✅ **GTO Solver**
-  - CFR algorithm implementation
-  - Game tree builder
-  - Information set management
-  - Strategy computation
+Set a board, two ranges, a stack and a pot, give it a few seconds, and it
+returns a strategy - plus a number saying how far from equilibrium that strategy
+actually is.
 
-- ✅ **User Interface**
-  - Interactive range grid (13x13 matrix)
-  - Board visualizer with card graphics
-  - Strategy table with action frequencies
-  - Demo scenario: BTN vs BB postflop c-bet spot
+- **Exact hole cards.** Every holding in both ranges is updated on every
+  iteration. Hands are not bucketed by strength, so the solver can tell a
+  backdoor flush draw from the same rank of air.
+- **Multi-street.** Play runs to showdown through the turn and river, with
+  betting on each street.
+- **Runs off the main thread.** Solving happens in a Web Worker against a time
+  budget, so the page stays usable and you can stop it.
+- **Says how good the answer is.** Exploitability is measured against a best
+  response, reported per deal and as a share of the pot.
 
-## 🚀 Getting Started
+## Getting started
 
-### Prerequisites
-- Node.js 18+ 
-- npm or yarn
-
-### Installation
+Node 18+.
 
 ```bash
-# Install dependencies
 npm install
-
-# Start development server
-npm run dev
-
-# Build for production
+npm run dev      # http://localhost:5173
+npm test         # 96 tests
 npm run build
+npm run bench    # measurement sweeps, not part of the suite
 ```
 
-The app will be available at `http://localhost:5173`
+## How it works
 
-## 📖 How It Works
+**The betting tree** is enumerated once into flat typed arrays and reused. Its
+structure does not depend on which runout card falls, so a chance node has one
+successor per runout class rather than one per card.
 
-### Poker Engine
-The core poker engine includes:
-- **Card representation**: Efficient suit/rank encoding
-- **Hand evaluator**: Fast 7-card evaluation with proper hand rankings
-- **Equity calculator**: Monte Carlo simulation for hand vs range equity
-- **Range operations**: Union, intersection, removal, scaling
+**The solver** walks that tree once per iteration carrying a vector of per-hand
+reach probabilities and counterfactual values, rather than sampling one holding
+per player. Regret matching is per hand, weighted linearly.
 
-### CFR Solver
-The GTO solver uses Counterfactual Regret Minimization:
-1. **Game Tree**: Represents all possible actions (check, bet sizes, fold, call)
-2. **Information Sets**: Groups similar game states for each player
-3. **Regret Matching**: Iteratively updates strategies based on regret minimization
-4. **Convergence**: Approaches Nash equilibrium (GTO) over many iterations
+**Showdowns** are precomputed: every holding against every runout, so hand
+evaluation never runs in the hot loop. Card removal is handled explicitly -
+two players cannot hold the same card, and ignoring that biases everything
+downstream while still looking plausible.
 
-### Demo Scenario
-The current demo shows a simplified BTN vs BB postflop spot:
-- **Situation**: K♠9♥4♣ flop, single raised pot
-- **Stack**: 100bb effective
-- **Pot**: 10bb
-- **Action**: BTN's c-betting strategy vs BB's calling range
+**Exploitability** best-responds to the solved strategy and reports what that
+gains. It is measured *within the abstraction*: a counter-strategy confined to
+the same betting tree. A real opponent free to choose any bet size would gain
+more, so the true distance from Nash is larger than the number shown.
 
-Click "Solve This Spot" to run 1000 CFR iterations and see the computed GTO strategy.
+## What it is not
 
-## 🛠️ Architecture
+Being straight about the limits, because the output looks more authoritative
+than it is:
+
+- **A river solve is good** - it reaches a few tenths of a percent of pot. A
+  turn solve is decent. **A flop solve is not** yet: at the ten seconds the
+  default budget allows, it is tens of percent of pot exploitable. The gap is
+  runouts, not bet sizes.
+- **Runouts are abstracted.** The solver samples one runout per iteration and
+  optionally sorts cards into texture classes. Exact runouts - what commercial
+  solvers do, via suit isomorphism - are not implemented. That is the single
+  biggest thing standing between this and a trustworthy flop solve.
+- **Bet sizing is restricted** to 50% pot, pot, and all-in, with at most three
+  bets or raises per street. This costs far less than the runout abstraction;
+  published work puts a single-size tree within a fraction of a percent of an
+  eight-size one.
+- **Two players, postflop only.** No preflop solving, no multiway.
+
+`TODO.md` carries the live state, the measured numbers, and what is worth doing
+next. It is more current than this file.
+
+## Layout
 
 ```
-src/
-├── engine/          # Poker game logic
-│   ├── cards.ts     # Card representation, deck utilities
-│   ├── evaluator.ts # Hand strength evaluation
-│   ├── equity.ts    # Monte Carlo equity calculations
-│   └── range.ts     # Range representation and operations
-├── solver/          # GTO solver
-│   ├── cfr.ts       # CFR algorithm
-│   ├── game-tree.ts # Game state tree
-│   └── infoset.ts   # Information set management
-├── components/      # React UI components
-│   ├── RangeGrid.tsx     # 13x13 hand range selector
-│   ├── BoardView.tsx     # Community cards display
-│   ├── Card.tsx          # Single card component
-│   └── StrategyTable.tsx # Action frequencies table
-└── utils/
-    └── poker.ts     # Poker constants and helpers
+src/engine/    cards, hand evaluation, ranges, combo enumeration
+src/solver/    betting tree, showdown tables, the CFR core, exploitability
+src/components/  range grid, board, card picker, strategy table
+bench/         measurement sweeps, run separately from the tests
 ```
 
-## 🎮 Usage
+## License
 
-### Understanding the Range Grid
-- **Diagonal**: Pocket pairs (AA, KK, QQ, etc.)
-- **Above diagonal**: Suited hands (AKs, KQs, etc.)
-- **Below diagonal**: Offsuit hands (AKo, KQo, etc.)
-- **Colors**: 
-  - Gray: Not in range (0%)
-  - Red: <25% frequency
-  - Orange: 25-50%
-  - Yellow: 50-75%
-  - Green: 75-100%
-
-### Reading the Strategy Table
-- **Frequency bars**: Visual representation of how often each action is taken
-- **Percentage**: Exact frequency for each action
-- **EV** (coming soon): Expected value for each action
-
-## 🔮 Roadmap
-
-### v0.2 - Enhanced Solver
-- [ ] Multi-street solving (flop → turn → river)
-- [ ] Bet sizing optimization
-- [ ] Custom scenario builder
-- [ ] Solution export/import
-
-### v0.3 - Training Features
-- [ ] Quiz mode (test your decisions vs GTO)
-- [ ] Precomputed scenario library
-- [ ] Hand replayer with GTO overlay
-- [ ] Performance tracking
-
-### v0.4 - Advanced Features
-- [ ] Multi-way pots (3+ players)
-- [ ] Range equity graphs
-- [ ] Node locking
-- [ ] Hand history import
-
-### v1.0 - Desktop App
-- [ ] Electron wrapper
-- [ ] Local database (SQLite)
-- [ ] Native performance optimizations
-- [ ] Auto-updates
-
-## 🧮 Performance
-
-Current benchmarks (approximate):
-- Hand evaluation: <1ms for 1000 evaluations
-- Equity calculation: ~50ms for 2-way, 10k iterations
-- CFR iteration: ~10-20ms per iteration (depends on game tree size)
-
-## 🤝 Contributing
-
-This is an open-source project. Contributions welcome!
-
-Areas that need work:
-- Performance optimization (Web Workers, WASM)
-- More sophisticated bet sizing
-- Better UI/UX
-- Testing and validation
-- Documentation
-
-## 📄 License
-
-MIT License - Free to use, modify, and distribute
-
-## 🙏 Acknowledgments
-
-Inspired by:
-- PioSOLVER
-- GTO+
-- MonkerSolver
-
-Built with:
-- React + TypeScript
-- Vite
-- Tailwind CSS
-
-## ⚠️ Disclaimer
-
-This is an educational project and MVP. For serious GTO study, commercial solvers offer more features and have been extensively tested. This tool is best for:
-- Learning GTO concepts
-- Quick spot checking
-- Studying without subscription costs
-- Understanding how solvers work under the hood
-
----
-
-**Built by poker players, for poker players. Free forever.**
+MIT

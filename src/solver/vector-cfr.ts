@@ -71,7 +71,14 @@ import { Rng, makeRng } from './rng'
 // expected to be changed, and a literal type makes anything that branches on
 // it - the page describing the scheme it is running, for one - fail to compile
 // for asking a question the compiler has already decided the answer to.
-export const DEFAULT_RUNOUT_CLASSES: number = 4
+// Set to 1, against the converged evidence, because the app does not run
+// converged. K=4 wins once a solve has had enough iterations to fill four
+// times the slots, and loses badly before that - on a flop at the ~420
+// iterations ten seconds actually buys, K=1 is 57.6% exploitable and K=4 is
+// 105.1%. The crossover is around 1-2k iterations on a turn and has not
+// arrived by 1,600 on a flop. Raise this when the budget rises, or when
+// exact runouts make the question moot.
+export const DEFAULT_RUNOUT_CLASSES: number = 1
 
 export interface VectorCFROptions {
   stack: number

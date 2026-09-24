@@ -40,9 +40,12 @@ function runoutLabel(classCount: number): string {
 // Seconds, not iterations. An iteration costs the same at every K but very
 // different amounts per street - about 0.6 ms on a river against 19 ms on a
 // flop - so a count that is sensible on one board is either instant or
-// interminable on another. Ten seconds is a few thousand flop iterations or a
-// good fifteen thousand river ones, which is the right shape for a default:
-// enough to be worth looking at, short enough that nobody walks away.
+// interminable on another. Ten seconds is about 420 flop
+// iterations, 2,100 turn ones or 16,000 on a river - measured from a browser
+// run, not derived. That is the right shape for a default: enough to be worth
+// looking at, short enough that nobody walks away. It is also far short of
+// converged on a flop, which is why the runout class count defaults to 1 -
+// see DEFAULT_RUNOUT_CLASSES.
 const DEFAULT_SECONDS = 10
 
 function App() {
