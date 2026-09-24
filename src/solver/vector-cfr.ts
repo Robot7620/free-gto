@@ -1146,7 +1146,7 @@ export class VectorCFR {
   }
 
   // One action distribution for a set of holdings, weighted by their share of
-  // the range - the same aggregation CFRSolver.getRangeStrategy does, so the
+  // the range, weighted by how much of the range each holding is, so the
   // two solvers can be compared directly.
   aggregateStrategy(node: number, classes?: string[]): Map<string, number> {
     const player = this.tree.player[node]

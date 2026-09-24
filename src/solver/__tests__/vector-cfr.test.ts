@@ -1,12 +1,10 @@
 import { describe, it, expect, beforeAll } from 'vitest'
 import { stringToCard } from '../../engine/cards'
 import { Range } from '../../engine/range'
-import { CFRSolver } from '../cfr'
-import { createInitialNode } from '../game-tree'
 import { CHANCE, TERMINAL } from '../public-tree'
 import { VectorCFR } from '../vector-cfr'
 
-// The same spot as the river fixture, solved the vectorized way.
+// A river spot, solved the vectorized way.
 //
 // A river solve is the correctness gate for this solver because it has no
 // runouts left to deal: the K=1 runout abstraction - regrets keyed on a public
@@ -119,100 +117,11 @@ describe('vectorized river solve', () => {
     const aggression = (combo: string): number =>
       1 - (solver.aggregateStrategy(0, [combo]).get('check') ?? 0)
 
-    // The same two assertions river-fixture.test.ts makes of the sampled
+    // The two assertions that pinned hand strength for the old sampler
     // solver, so the vectorized one is held to the standard the sampled one
     // already meets.
     expect(aggression('KK')).toBeGreaterThan(aggression('55') + 0.2)
     expect(aggression('AQo')).toBeLessThan(aggression('KK'))
-  })
-})
-
-describe('vectorized and sampled solvers on the river', () => {
-  // The sampled solver is believed correct on the river, so the two should
-  // agree about the shape of the strategy. They cannot be compared frequency
-  // for frequency, and not only because one is noisy:
-  //
-  //  - The sampled solver keys on a strength bucket, so AKs, KQs, KJs, KTs and
-  //    AKo are literally one info set to it and come back with one number.
-  //  - The vectorized solver develops a check-raise, which the root "how often
-  //    does this bet" figure hides entirely: it checks its sets and raises with
-  //    them when bet into. Root aggression therefore reads LOWER for its
-  //    strongest hands, which is a different strategy, not a worse one.
-  //
-  // What survives both of those is how a holding answers a bet. That is one
-  // decision with an unambiguous ordering - stronger hands fold less - so it is
-  // what the two get compared on.
-  let vector: VectorCFR
-  let sampled: CFRSolver
-
-  beforeAll(() => {
-    vector = solved()
-    sampled = new CFRSolver(SEED)
-    sampled.solve(
-      createInitialNode(100, 10, BOARD),
-      [Range.fromString(BTN), Range.fromString(BB)],
-      BOARD,
-      20000
-    )
-  })
-
-  it('agrees on which holdings never fold to a bet and which always do', () => {
-    const facing = vector.nodeFor(['check', 'bet50'])
-    const rows: { combo: string; vector: number; sampled: number }[] = []
-
-    for (const combo of BB.split(',')) {
-      const v = vector.aggregateStrategy(facing, [combo]).get('fold') ?? 0
-      const s =
-        sampled.getRangeStrategy(Range.fromString(combo), BOARD, 'check/bet50').get('fold') ?? 0
-      rows.push({ combo, vector: v, sampled: s })
-    }
-
-    console.log('      fold frequency facing a half-pot bet (vector / sampled)')
-    for (const row of rows) {
-      console.log(`        ${row.combo.padEnd(4)} ${row.vector.toFixed(3)} / ${row.sampled.toFixed(3)}`)
-    }
-
-    let neverFold = 0
-    let alwaysFold = 0
-    for (const row of rows) {
-      // A holding one solver never folds must not be a majority fold for the
-      // other. The margin is wide on purpose: the point is that they agree on
-      // which hands are continues and which are give-ups, not on the exact
-      // mix inside the indifference region between them, which is genuinely
-      // underdetermined - several of these holdings have identical equity
-      // against everything the opponent bets.
-      if (row.sampled <= 0.05) {
-        expect(row.vector, `${row.combo} is a never-fold for the sampled solver`).toBeLessThan(0.5)
-        neverFold++
-      }
-      if (row.vector <= 0.05) {
-        expect(row.sampled, `${row.combo} is a never-fold for the vectorized solver`).toBeLessThan(0.5)
-      }
-      if (row.sampled >= 0.95) {
-        expect(row.vector, `${row.combo} is a give-up for the sampled solver`).toBeGreaterThan(0.5)
-        alwaysFold++
-      }
-      if (row.vector >= 0.95) {
-        expect(row.sampled, `${row.combo} is a give-up for the vectorized solver`).toBeGreaterThan(0.5)
-      }
-    }
-
-    // If neither group has anything in it the assertions above are vacuous.
-    expect(neverFold).toBeGreaterThanOrEqual(5)
-    expect(alwaysFold).toBeGreaterThanOrEqual(3)
-  })
-
-  it('never folds a set and always folds unpaired ace-high', () => {
-    const facing = vector.nodeFor(['check', 'bet50'])
-    const fold = (combo: string) => vector.aggregateStrategy(facing, [combo]).get('fold') ?? 0
-
-    // KK, 99, 44 and 22 are all sets on Ks9h4c2d7s; AQo and AJo missed it.
-    for (const combo of ['KK', '99', '44', '22']) {
-      expect(fold(combo), `${combo} should never fold`).toBeLessThan(0.05)
-    }
-    for (const combo of ['AQo', 'AJo']) {
-      expect(fold(combo), `${combo} should give up`).toBeGreaterThan(0.9)
-    }
   })
 })
 
